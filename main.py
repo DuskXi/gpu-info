@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from monitor import monitor
+from status_exports import render_prometheus, render_status_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -175,11 +177,47 @@ async def lifespan(_: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/api/status")
-async def status() -> dict[str, Any]:
-    if store.latest is None:
+def latest_frame() -> TelemetryFrame:
+    frame = store.latest
+    if frame is None:
         raise HTTPException(status_code=503, detail="Waiting for first sample")
-    return store.latest.as_message()
+    return frame
+
+
+@app.get("/status.json")
+@app.get("/api/status")
+async def status(response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    return latest_frame().as_message()
+
+
+@app.get("/status.md")
+async def status_markdown() -> Response:
+    frame = store.latest
+    if frame is None:
+        return Response("# GPU Monitor 状态\n\n等待首次采样。\n", status_code=503,
+                        media_type="text/markdown", headers={"Cache-Control": "no-store"})
+    return Response(render_status_markdown(frame.as_message()), media_type="text/markdown",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/metrics")
+async def prometheus_metrics() -> Response:
+    frame = store.latest
+    if frame is None:
+        return Response(
+            "# HELP gpu_info_up A telemetry frame is available from the collector.\n"
+            "# TYPE gpu_info_up gauge\n"
+            "gpu_info_up 0\n",
+            status_code=503,
+            media_type="text/plain; version=0.0.4",
+            headers={"Cache-Control": "no-store"},
+        )
+    return Response(
+        render_prometheus(frame.as_message()),
+        media_type="text/plain; version=0.0.4",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/history")

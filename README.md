@@ -50,9 +50,14 @@ pnpm dev
 | 接口 | 用途 |
 | --- | --- |
 | `GET /api/status` | 最新快照；首次采样前返回 503 |
+| `GET /status.json` | 根路径的完整最新快照；与 `/api/status` 内容相同 |
+| `GET /status.md` | 根路径的人类可读状态摘要，`text/markdown` |
+| `GET /metrics` | 根路径的 Prometheus 文本指标，`text/plain; version=0.0.4` |
 | `GET /api/history?limit=120` | 最近 1–120 帧，按时间升序 |
 | `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
+
+三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。`/metrics` 使用 `gpu_info_` 前缀，缺失计数器不输出样本；进程指标带 GPU、PID 和进程名标签。Prometheus 可配置 `metrics_path: /metrics` 抓取。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
 
 ## 统计口径
 
