@@ -13,3 +13,4 @@ frontend/dist/
 .pnpm-store/
 _cuda*.txt
 _lint.txt
+data/display-events.jsonl

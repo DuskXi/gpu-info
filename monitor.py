@@ -15,6 +15,8 @@ from typing import Any, Callable, NamedTuple
 
 import psutil
 
+from display_state import read_display_state
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,6 +76,9 @@ class GPUMonitor:
         self._wmi_sampled_at: float | None = None
         self._process_samples: dict[int, _ProcessSample] = {}
         self._logical_cpus = max(1, psutil.cpu_count() or 1)
+        self._display_state: dict[str, Any] | None = None
+        self._display_checked_at = 0.0
+        self._display_sampled_at: float | None = None
         try:
             import pynvml
             pynvml.nvmlInit()
@@ -90,6 +95,7 @@ class GPUMonitor:
             except Exception as exc:
                 logger.warning("WMI shutdown incomplete: %s", exc)
             self._wmi_executor.shutdown(wait=released, cancel_futures=True)
+            self._wmi_executor = None
         if self.nvml is not None:
             self.nvml.nvmlShutdown()
             self.nvml = None
@@ -137,9 +143,21 @@ class GPUMonitor:
             },
             "gpus": [], "processes": [], "process_utilization": [],
             "windows_adapter_memory": [],
+            "display_state": self._display_state,
+            "display_sampled_at": self._display_sampled_at,
             "source": "NVML" if self.nvml is not None else "unavailable",
             "errors": [],
         }
+        if os.name == "nt" and time.monotonic() - self._display_checked_at >= 5:
+            self._display_checked_at = time.monotonic()
+            try:
+                self._display_state = read_display_state()
+                self._display_sampled_at = time.time()
+            except Exception as exc:
+                logger.warning("Display configuration read failed: %s", exc)
+                result["errors"].append(f"Display configuration unavailable: {exc}")
+            result["display_state"] = self._display_state
+            result["display_sampled_at"] = self._display_sampled_at
         if self.nvml is None:
             result["errors"].append("NVML unavailable; NVIDIA metrics cannot be read")
             return result

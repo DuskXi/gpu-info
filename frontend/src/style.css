@@ -80,6 +80,18 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .hero-stat > span { padding-bottom: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .meter { height: 4px; margin: 22px 0 27px; background: var(--line-soft); }
 .meter span { display: block; height: 100%; background: var(--accent); }
+.vram-composition { display: grid; grid-template-columns: 164px minmax(0, 1fr); align-items: center; gap: 30px; margin: 0 0 27px; }
+.vram-pie { width: 164px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgb(18 45 59 / 8%); }
+.vram-legend { min-width: 0; display: flex; flex-direction: column; gap: 11px; }
+.vram-legend > .label { margin-bottom: 4px; font-size: 13px; }
+.vram-legend .label small { margin-left: 7px; color: var(--soft); font: 10px "DM Mono", monospace; }
+.vram-legend > div { display: grid; grid-template-columns: 9px minmax(0, 1fr) auto; align-items: center; gap: 9px; font-size: 12px; }
+.vram-legend i { width: 9px; height: 9px; border-radius: 50%; }
+.legend-used { background: var(--accent); }
+.legend-free { background: var(--line-soft); border: 1px solid var(--line); }
+.vram-legend div span { color: var(--muted); }
+.vram-legend div strong { font: 500 14px "DM Mono", monospace; }
+.vram-legend p { margin: 2px 0 0; color: var(--soft); font-size: 10px; line-height: 1.6; }
 .gpu-metrics { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line-soft); }
 .gpu-metrics div { padding: 17px 0; display: flex; flex-direction: column; gap: 7px; border-bottom: 1px solid var(--line-soft); }
 .gpu-metrics div:nth-child(even) { padding-left: 20px; border-left: 1px solid var(--line-soft); }
@@ -91,6 +103,20 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .device-details dl div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; border-top: 1px solid var(--line-soft); }
 .device-details dt { flex: none; }
 .device-details dd { margin: 0; color: var(--text); text-align: right; overflow-wrap: anywhere; }
+.display-panel { margin-top: 16px; padding: 22px 26px; border: 1px solid var(--line); background: var(--panel); }
+.display-panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+.display-panel-head small, .display-empty { color: var(--soft); font-size: 10px; }
+.display-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 18px; padding: 11px 0; border-top: 1px solid var(--line-soft); font-size: 12px; }
+.display-row strong { font-weight: 700; }
+.display-row span { color: var(--muted); font: 11px "DM Mono", monospace; }
+.display-log { margin-top: 8px; border-top: 1px solid var(--line-soft); }
+.display-log summary { display: flex; justify-content: space-between; gap: 12px; padding: 13px 0 2px; color: var(--accent); cursor: pointer; font-size: 11px; font-weight: 700; }
+.display-log summary span { color: var(--soft); font-weight: 500; }
+.display-log ol { max-height: 235px; margin: 10px 0 0; padding: 0; list-style: none; overflow-y: auto; }
+.display-log li { display: grid; grid-template-columns: 66px minmax(0, 1fr) auto; gap: 3px 10px; padding: 10px 0; border-top: 1px solid var(--line-soft); font-size: 11px; }
+.display-log time { color: var(--soft); font: 10px "DM Mono", monospace; }
+.display-log li > strong { font-weight: 600; }
+.display-log li > small { grid-column: 2 / -1; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .process-section { margin-top: 88px; }
 .accounting-disclosure { margin: 0 0 20px; background: var(--panel); border: 1px solid var(--line); }
 .accounting-disclosure summary { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 38px 15px 18px; cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
@@ -253,6 +279,10 @@ tbody tr:hover { background: var(--panel-hover); }
   .accounting-disclosure summary strong { text-align: left; }
   .accounting-values { grid-template-columns: 1fr; gap: 12px; }
   .gpu-card { padding: 22px 22px 0; }
+  .vram-composition { grid-template-columns: 120px minmax(0, 1fr); gap: 18px; }
+  .vram-pie { width: 120px; }
+  .display-panel { padding: 18px 20px; }
+  .display-panel-head { align-items: flex-start; flex-direction: column; }
   .table-toolbar { flex-wrap: wrap; }
   .table-toolbar input { width: 100%; }
   .table-toolbar > span { display: none; }

@@ -10,6 +10,8 @@ const gpus = computed(() => snapshot.value?.gpus ?? [])
 const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
 const processes = computed(() => snapshot.value?.processes ?? [])
 const accounting = computed(() => memoryAccounts(snapshot.value))
+const displayState = computed(() => snapshot.value?.display_state)
+const displayEvents = computed(() => [...(snapshot.value?.display_events ?? [])].reverse())
 const query = ref('')
 const gpuFilter = ref('all')
 const sort = ref('used_memory')
@@ -47,6 +49,19 @@ function counterOverCapacity(proc) {
   const capacity = gpuCapacity.value.get(proc.gpu_id)
   return Number.isFinite(proc.claimed_memory) && Number.isFinite(capacity)
     && proc.claimed_memory > capacity
+}
+function vramParts(gpu) {
+  const total = gpu.memory?.total
+  const used = gpu.memory?.used
+  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(used)) return null
+  const occupied = Math.max(0, Math.min(total, used))
+  return { used: occupied, free: total - occupied, percent: occupied / total * 100 }
+}
+function displayLabel(display) {
+  const resolution = display.width && display.height ? `${display.width} × ${display.height}` : '分辨率未知'
+  const refresh = Number.isFinite(display.refresh_hz) ? ` · ${display.refresh_hz.toFixed(1)} Hz` : ''
+  const hdr = display.hdr_enabled == null ? '' : ` · HDR ${display.hdr_enabled ? '开' : '关'}`
+  return `${resolution}${refresh}${hdr}`
 }
 </script>
 
@@ -106,6 +121,18 @@ function counterOverCapacity(proc) {
             <div class="meter" role="meter" :aria-valuenow="gpu.memory?.percent ?? 0" aria-valuemin="0" aria-valuemax="100" aria-label="显存占用率">
               <span :style="{ width: `${Math.min(100, gpu.memory?.percent ?? 0)}%` }"></span>
             </div>
+            <div v-if="vramParts(gpu)" class="vram-composition">
+              <div class="vram-pie" role="img"
+                :aria-label="`GPU ${gpu.id} 真实显存：已用 ${bytes(vramParts(gpu).used)}，可用 ${bytes(vramParts(gpu).free)}`"
+                :style="{ background: `conic-gradient(var(--accent) 0 ${vramParts(gpu).percent}%, var(--line-soft) ${vramParts(gpu).percent}% 100%)` }">
+              </div>
+              <div class="vram-legend">
+                <span class="label">真实显存组成 <small>NVML / GPU {{ gpu.id }}</small></span>
+                <div><i class="legend-used"></i><span>已用</span><strong>{{ bytes(vramParts(gpu).used) }}</strong></div>
+                <div><i class="legend-free"></i><span>可用</span><strong>{{ bytes(vramParts(gpu).free) }}</strong></div>
+                <p>按整卡容量划分；共享资源无法可靠拆给单个进程。</p>
+              </div>
+            </div>
             <div class="gpu-metrics">
               <div><span>GPU 负载</span><strong>{{ percent(gpu.utilization?.gpu) }}</strong></div>
               <div><span>显存控制器</span><strong>{{ percent(gpu.utilization?.memory) }}</strong></div>
@@ -126,6 +153,26 @@ function counterOverCapacity(proc) {
               </dl>
             </details>
           </article>
+        </div>
+        <div v-if="displayState" class="display-panel">
+          <div class="display-panel-head"><span class="label">当前显示配置</span><small>{{ displayState.count }} 个活动显示器 · 每 5 秒检查变化</small></div>
+          <div v-if="!displayState.displays?.length" class="display-empty">当前没有活动显示路径</div>
+          <div v-for="display in displayState.displays" :key="display.id" class="display-row">
+            <strong>{{ display.name }}</strong>
+            <span>{{ displayLabel(display) }}</span>
+          </div>
+          <details v-if="displayEvents.length" class="display-log">
+            <summary>显示状态记录 <span>{{ displayEvents.length }} 条最近事件</span></summary>
+            <ol>
+              <li v-for="event in displayEvents" :key="`${event.timestamp}:${event.kind}`">
+                <time>{{ time(event.timestamp) }}</time>
+                <span>{{ event.kind === 'baseline' ? '启动基线' : '配置变化' }}</span>
+                <strong>{{ event.previous && event.previous.count !== event.current.count ? `${event.previous.count} → ` : '' }}{{ event.current.count }} 屏</strong>
+                <small>{{ event.current.displays.map(displayLabel).join(' / ') || '无活动显示器' }}</small>
+                <small v-if="event.gpu_memory?.length">当时整卡已用 {{ event.gpu_memory.map(item => `GPU ${item.gpu_id} ${bytes(item.used)}`).join(' · ') }}</small>
+              </li>
+            </ol>
+          </details>
         </div>
       </section>
 

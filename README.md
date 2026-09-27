@@ -1,6 +1,6 @@
 # GPU Monitor
 
-本地 NVIDIA GPU 监视器。后端通过 NVML 读取硬件数据，前端提供总览、进程显存表和最近 120 帧的单指标趋势。
+本地 NVIDIA GPU 监视器。后端通过 NVML 读取硬件数据，前端提供总览、真实显存饼图、进程显存表和最近 120 帧的单指标趋势。
 
 ## 启动
 
@@ -38,6 +38,8 @@ pnpm dev
   "processes": [],
   "process_utilization": [],
   "windows_adapter_memory": [],
+  "display_state": null,
+  "display_events": [],
   "source": "NVML",
   "errors": []
 }
@@ -49,11 +51,14 @@ pnpm dev
 | --- | --- |
 | `GET /api/status` | 最新快照；首次采样前返回 503 |
 | `GET /api/history?limit=120` | 最近 1–120 帧，按时间升序 |
+| `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
 
 ## 统计口径
 
 - GPU 显存总占用来自 NVML，包含驱动和未归属到进程的分配。
+- 首页饼图只用同一份 NVML 设备快照的已用量与可用量；Windows 进程计数不能精确拆成互斥的显存扇区。
+- Windows 每 5 秒通过 QueryDisplayConfig 检查活动显示路径，记录显示器名称、桌面/信号分辨率、刷新率及 HDR 状态。首次读取记为启动基线，之后只在配置改变时追加事件到 `data/display-events.jsonl`；事件同时保存当时 NVML 显存读数和 DWM 进程计数以便对照。旧版 Windows 若只能报告“高级色彩”，HDR 状态显示为未知。
 - Windows WDDM 下，NVML 的进程显存通常不可用。程序用无上下文的 CUDA Driver 设备 LUID 查询，将 Windows GPU 进程计数器精确关联到 NVML 所列 NVIDIA 设备；未匹配的核显计数器不计入。其他系统使用 NVML 的计算和图形进程列表，同一 GPU / PID 重复出现时取较大值。
 - Windows 进程表以 `GPU Process Memory\Local Usage` 显示“本地显存”，同时保留 `Dedicated Usage` 为“专用记账”，`Total Committed` 为“总提交”。本地显存更接近当前位于 GPU 本地内存的用量；它仍可能包含跨进程共享的窗口表面，不等于进程独占量，也不能相加推算设备总占用。专用记账在部分系统上会明显高于实际驻留，甚至高于物理显存容量。
 - `windows_adapter_memory` 是与进程值同轮读取的 Windows 设备级专用/共享使用量，用于在总览页核对计数口径；NVML 的设备占用仍是独立数据源。当前采样无法把 DWM 的进程值拆成自身私有分配、其他程序共享的表面和驱动内部资源。
