@@ -1,4 +1,5 @@
-const colors = ['#007c96', '#334fc1', '#bd6425', '#8e45ab', '#23775b', '#667b8e']
+// Keep adjacent sectors distinct in hue and lightness, including the last/first seam.
+const colors = ['#0072b2', '#e69f00', '#cc79a7', '#009e73', '#d55e00', '#3a3f4b']
 
 export function processVramComposition(frame, gpuId, visibleCount = 5) {
   const deviceUsed = frame?.gpus?.find(gpu => gpu.id === gpuId)?.memory?.used ?? null
