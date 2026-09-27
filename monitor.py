@@ -44,6 +44,11 @@ class _ProcessSample(NamedTuple):
     io_bytes: int | None
 
 
+class _WindowsMemorySample(NamedTuple):
+    processes: list[dict[str, Any]]
+    adapters: list[dict[str, Any]]
+
+
 class GPUMonitor:
     def __init__(self) -> None:
         self.nvml: Any = None
@@ -59,8 +64,9 @@ class GPUMonitor:
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-wmi")
             if os.name == "nt" else None
         )
-        self._wmi_future: Future[list[dict[str, Any]]] | None = None
+        self._wmi_future: Future[_WindowsMemorySample] | None = None
         self._wmi_processes: list[dict[str, Any]] = []
+        self._wmi_adapter_memory: list[dict[str, Any]] = []
         self._wmi_requested_at = 0.0
         self._wmi_sampled_at: float | None = None
         self._process_samples: dict[int, _ProcessSample] = {}
@@ -127,6 +133,7 @@ class GPUMonitor:
                 "memory": {"total": vm.total, "used": vm.used, "percent": vm.percent},
             },
             "gpus": [], "processes": [], "process_utilization": [],
+            "windows_adapter_memory": [],
             "source": "NVML" if self.nvml is not None else "unavailable",
             "errors": [],
         }
@@ -320,12 +327,15 @@ class GPUMonitor:
         collected_this_tick = False
         if self._wmi_future is not None and self._wmi_future.done():
             try:
-                self._wmi_processes = self._wmi_future.result()
+                sample = self._wmi_future.result()
+                self._wmi_processes = sample.processes
+                self._wmi_adapter_memory = sample.adapters
                 self._wmi_sampled_at = time.time()
                 self._wmi_error = None
             except Exception as exc:
                 self._wmi_error = f"Windows GPU process counters unavailable: {exc}"
                 self._wmi_processes = []
+                self._wmi_adapter_memory = []
                 self._wmi_sampled_at = None
             self._wmi_future = None
             collected_this_tick = True
@@ -352,11 +362,12 @@ class GPUMonitor:
             else:
                 result["processes"].append(dict(process))
         result["processes_sampled_at"] = self._wmi_sampled_at
+        result["windows_adapter_memory"] = [dict(row) for row in self._wmi_adapter_memory]
         result["source"] = "NVML + Windows GPU counters"
 
     def _query_windows_processes(
         self, names: dict[int, str], gpu_names: dict[int, str]
-    ) -> list[dict[str, Any]]:
+    ) -> _WindowsMemorySample:
         try:
             if self._wmi is None:
                 import pythoncom
@@ -371,6 +382,30 @@ class GPUMonitor:
         grouped: dict[tuple[int, int], dict[str, Any]] = {}
         luid_map = self._luid_by_gpu
         assert luid_map is not None
+        adapters: dict[int, dict[str, Any]] = {}
+        adapter_counters = self._read(
+            lambda: self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory(),
+            [],
+        )
+        for counter in adapter_counters:
+            match = re.search(
+                r"luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)", counter.Name, re.IGNORECASE
+            )
+            if match is None:
+                continue
+            luid = f"{match.group(1)}_{match.group(2)}".upper()
+            gpu_id = luid_map.get(luid)
+            if gpu_id is None:
+                continue
+            adapter = adapters.setdefault(gpu_id, {
+                "gpu_id": gpu_id, "dedicated_usage": 0, "shared_usage": 0,
+            })
+            adapter["dedicated_usage"] += self._read(
+                lambda: int(counter.DedicatedUsage), 0
+            )
+            adapter["shared_usage"] += self._read(
+                lambda: int(counter.SharedUsage), 0
+            )
         engine_load = self._read_engine_load(luid_map)
         for counter in counters:
             identity = _counter_identity(counter.Name)
@@ -396,7 +431,10 @@ class GPUMonitor:
                 }
             grouped[key]["used_memory"] += dedicated
             grouped[key]["shared_memory"] += shared
-        return [process for process in grouped.values() if process["used_memory"] > 0]
+        return _WindowsMemorySample(
+            [process for process in grouped.values() if process["used_memory"] > 0],
+            [adapters[gpu_id] for gpu_id in sorted(adapters)],
+        )
 
     def _read_engine_load(self, luid_map: dict[str, int]) -> dict[tuple[int, int], float]:
         """Batch-sample PDH engine rates without per-instance WMI COM reads."""

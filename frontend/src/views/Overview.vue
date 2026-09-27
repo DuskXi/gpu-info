@@ -2,11 +2,13 @@
 import { computed, ref } from 'vue'
 import { useMonitorData } from '../composables/useMonitorData'
 import { bytes, number, percent, time } from '../format'
+import { memoryAccounts } from '../accounting'
 
 const { snapshot } = useMonitorData()
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
 const processes = computed(() => snapshot.value?.processes ?? [])
+const accounting = computed(() => memoryAccounts(snapshot.value))
 const query = ref('')
 const gpuFilter = ref('all')
 const sort = ref('used_memory')
@@ -118,9 +120,24 @@ function sortBy(key) {
 
       <section class="section-block process-section" aria-labelledby="process-heading">
         <div class="section-heading">
-          <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">显存占用进程</h2></div>
+          <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">进程显存记账</h2></div>
           <span class="section-aside">进程采样 {{ time(snapshot?.processes_sampled_at) }} · GPU / PID 去重</span>
         </div>
+        <details v-for="account in accounting" :key="account.gpuId" class="accounting-disclosure">
+          <summary>
+            <span>GPU {{ account.gpuId }} · 显存口径核对</span>
+            <strong>{{ account.excess > 0 ? `进程账面超出 Windows 设备计数 ${bytes(account.excess)}` : '查看进程与设备的记账差异' }}</strong>
+          </summary>
+          <div class="accounting-content">
+            <div class="accounting-values">
+              <div><span>NVML 设备已用</span><strong>{{ bytes(account.nvmlUsed) }}</strong></div>
+              <div><span>Windows 设备专用使用</span><strong>{{ bytes(account.adapterUsed) }}</strong></div>
+              <div><span>Windows {{ account.processCount }} 个进程账面合计</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
+            </div>
+            <p>DWM 和 csrss 可引用其他程序的窗口表面，同一份资源会记在多个进程名下。进程合计不能当作实际显存用量，也无法从这些计数器拆出 DWM 自身分配与共享表面。这里的“共享 GPU 内存”指系统内存，并非跨进程共享部分。</p>
+            <a href="https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/" target="_blank" rel="noopener noreferrer">微软的计数器说明 ↗</a>
+          </div>
+        </details>
         <div class="table-toolbar">
           <input v-model="query" type="search" placeholder="搜索进程名或 PID" aria-label="搜索进程" />
           <select v-model="gpuFilter" aria-label="筛选 GPU">
@@ -151,7 +168,7 @@ function sortBy(key) {
         <button v-if="!query && shownProcesses.length > 20" class="table-more" @click="showAll = !showAll">
           {{ showAll ? '收起进程列表' : `显示全部 ${shownProcesses.length} 个进程` }} <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
         </button>
-        <p class="data-note">Windows 进程值来自对应 NVIDIA 设备的 GPU 性能计数器；设备总量来自 NVML。两者口径不同，进程值可能高于当前驻留显存，不能相加比较。共享内存和核显未计入。</p>
+        <p class="data-note">进程列包含跨进程共享的图形资源。设备总量以 NVML 为准；核显计数器未并入 NVIDIA 进程列表。</p>
       </section>
       </div>
     </template>

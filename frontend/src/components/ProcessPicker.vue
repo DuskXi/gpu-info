@@ -22,6 +22,7 @@ const fields = [
 ]
 
 const selected = computed(() => props.processes.find(p => p.key === props.selectedKey))
+const hasWindowsMemory = computed(() => props.processes.some(p => p.memory_source === 'Windows GPU counters'))
 function activityPercent(value) {
   if (value == null || !Number.isFinite(value)) return '—'
   if (value > 0 && value < 0.1) return '<0.1%'
@@ -111,7 +112,10 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutside))
         </button>
         <div v-if="!rows.length" class="process-picker-empty">没有匹配的进程</div>
       </div>
-      <p class="process-picker-note">CPU 为整机占比 · 磁盘为读写速率 · GPU 为最忙引擎，必要时采用 NVML SM 负载</p>
+      <p class="process-picker-note">
+        <template v-if="hasWindowsMemory">显存是 Windows 进程记账；DWM 可包含其他程序共享的窗口表面，进程数值不能相加 · </template>
+        CPU 为整机占比 · 磁盘为读写速率 · GPU 为最忙引擎，必要时采用 NVML SM 负载
+      </p>
     </div>
   </div>
 </template>

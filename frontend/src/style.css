@@ -92,6 +92,19 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .device-details dt { flex: none; }
 .device-details dd { margin: 0; color: var(--text); text-align: right; overflow-wrap: anywhere; }
 .process-section { margin-top: 88px; }
+.accounting-disclosure { margin: 0 0 20px; background: var(--panel); border: 1px solid var(--line); }
+.accounting-disclosure summary { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 38px 15px 18px; cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
+.accounting-disclosure summary::-webkit-details-marker { display: none; }
+.accounting-disclosure summary strong { color: var(--alert); font-weight: 700; text-align: right; }
+.accounting-disclosure summary::after { position: absolute; right: 18px; content: '⌄'; color: var(--accent); font-size: 17px; }
+.accounting-disclosure[open] summary::after { content: '⌃'; }
+.accounting-content { padding: 4px 18px 18px; border-top: 1px solid var(--line-soft); }
+.accounting-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; padding: 18px 0; }
+.accounting-values div { display: flex; flex-direction: column; gap: 5px; }
+.accounting-values span { color: var(--muted); font-size: 11px; }
+.accounting-values strong { font: 500 18px "DM Mono", monospace; }
+.accounting-content p { max-width: 850px; margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.accounting-content a { color: var(--accent); font-size: 11px; font-weight: 700; }
 .table-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
 .table-toolbar input, .table-toolbar select, .target-control select {
   height: 42px; padding: 0 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 0; color: var(--text); outline: none;
@@ -225,6 +238,9 @@ tbody tr:hover { background: var(--panel-hover); }
   .strip-cell:nth-child(4) { border-top: 1px solid var(--line); }
   .section-block { margin-top: 55px; }
   .section-aside { display: none; }
+  .accounting-disclosure summary { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .accounting-disclosure summary strong { text-align: left; }
+  .accounting-values { grid-template-columns: 1fr; gap: 12px; }
   .gpu-card { padding: 22px 22px 0; }
   .table-toolbar { flex-wrap: wrap; }
   .table-toolbar input { width: 100%; }

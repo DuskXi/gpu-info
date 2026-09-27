@@ -69,16 +69,31 @@ class ProcessAccountingTests(unittest.TestCase):
                     ),
                 ]
 
+            def Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory(self):
+                return [
+                    SimpleNamespace(
+                        Name="luid_0x00000000_0x000196BD_phys_0",
+                        DedicatedUsage="750", SharedUsage="25",
+                    ),
+                    SimpleNamespace(
+                        Name="luid_0x00000000_0x0001D7FB_phys_0",
+                        DedicatedUsage="999", SharedUsage="999",
+                    ),
+                ]
+
         collector._wmi = FakeWmi()
         collector._read_engine_load = lambda _map: {(0, 42): 23}
         result = collector._query_windows_processes(
             collector._names, {0: "NVIDIA"}
         )
 
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["pid"], 42)
-        self.assertEqual(result[0]["used_memory"], 100)
-        self.assertEqual(result[0]["gpu_percent"], 23)
+        self.assertEqual(len(result.processes), 1)
+        self.assertEqual(result.processes[0]["pid"], 42)
+        self.assertEqual(result.processes[0]["used_memory"], 100)
+        self.assertEqual(result.processes[0]["gpu_percent"], 23)
+        self.assertEqual(result.adapters, [{
+            "gpu_id": 0, "dedicated_usage": 750, "shared_usage": 25,
+        }])
 
     def test_engine_rates_use_only_matched_nvidia_luid(self):
         collector = GPUMonitor.__new__(GPUMonitor)
