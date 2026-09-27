@@ -6,7 +6,7 @@ import {
   LineElement, Tooltip, Legend,
 } from 'chart.js'
 import { useMonitorData, procKey } from '../composables/useMonitorData'
-import { bytes, number, percent } from '../format'
+import { number, percent } from '../format'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 
@@ -57,7 +57,11 @@ const filteredProcessOptions = computed(() => {
     ? processOptions.value.filter(p => p.name.toLowerCase().includes(query) || String(p.pid).includes(query))
     : processOptions.value
 })
-watch(processSearch, () => { selectedProcess.value = filteredProcessOptions.value[0]?.key || '' })
+watch(filteredProcessOptions, options => {
+  if (!options.some(option => option.key === selectedProcess.value)) {
+    selectedProcess.value = options[0]?.key || ''
+  }
+}, { immediate: true })
 const processKey = computed(() => selectedProcess.value || filteredProcessOptions.value[0]?.key || '')
 const selectedProcessInfo = computed(() => processOptions.value.find(p => p.key === processKey.value))
 const palette = ['#007c96', '#425ec4', '#b36116', '#7953aa', '#b34e66']
@@ -192,6 +196,13 @@ function chooseMetric(key) {
         </div>
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
+        </template>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。指标单位单独显示，进程退出后的采样不会伪装为 0。</p>
+      </section>
+
+      <aside class="trend-side" aria-label="当前读数">
+        <section v-if="targets.length" class="reading-section">
+          <div class="section-heading"><div><p class="eyebrow">LIVE / SELECTED METRIC</p><h2>当前读数</h2></div></div>
           <div class="reading-grid">
             <div v-for="reading in readings" :key="reading.id" class="reading" :style="{ '--line-color': reading.color }">
               <span class="reading-name">{{ reading.name }}</span>
@@ -199,20 +210,22 @@ function chooseMetric(key) {
               <span class="reading-range">区间 {{ display(reading.min) }} – {{ display(reading.max) }}</span>
             </div>
           </div>
-        </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。指标单位单独显示，进程退出后的采样不会伪装为 0。</p>
-      </section>
-    </div>
+        </section>
 
-    <section v-if="mode === 'gpu' && gpus.length" class="detail-summary" aria-label="当前 GPU 数据">
-      <div class="section-heading"><div><p class="eyebrow">CURRENT / SNAPSHOT</p><h2>此刻</h2></div></div>
-      <div class="snapshot-grid">
-        <article v-for="gpu in gpus" :key="gpu.id">
-          <span>GPU {{ gpu.id }} · {{ gpu.name }}</span>
-          <strong>{{ bytes(gpu.memory?.used) }}</strong>
-          <small>{{ percent(gpu.utilization?.gpu) }} 负载 <span> / </span> {{ number(gpu.temperature, 0, '°C') }}</small>
-        </article>
-      </div>
-    </section>
+        <section v-if="mode === 'gpu' && gpus.length" class="detail-summary" aria-label="当前 GPU 数据">
+          <div class="section-heading"><div><p class="eyebrow">CURRENT / SNAPSHOT</p><h2>设备状态</h2></div></div>
+          <div class="snapshot-grid">
+            <article v-for="gpu in gpus" :key="gpu.id">
+              <span>GPU {{ gpu.id }} · {{ gpu.name }}</span>
+              <div class="snapshot-secondary">
+                <div><span>GPU 负载</span><b>{{ percent(gpu.utilization?.gpu) }}</b></div>
+                <div><span>温度</span><b>{{ number(gpu.temperature, 0, '°C') }}</b></div>
+                <div><span>功耗</span><b>{{ number(gpu.power?.usage, 0, ' W') }}</b></div>
+              </div>
+            </article>
+          </div>
+        </section>
+      </aside>
+    </div>
   </div>
 </template>

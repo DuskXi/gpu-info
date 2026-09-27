@@ -72,6 +72,7 @@ function sortBy(key) {
         </div>
       </section>
 
+      <div class="overview-columns">
       <section class="section-block" aria-labelledby="gpu-heading">
         <div class="section-heading">
           <div><p class="eyebrow">01 / DEVICES</p><h2 id="gpu-heading">图形设备</h2></div>
@@ -152,6 +153,7 @@ function sortBy(key) {
         </button>
         <p class="data-note">Windows 进程值来自对应 NVIDIA 设备的 GPU 性能计数器；设备总量来自 NVML。两者口径不同，进程值可能高于当前驻留显存，不能相加比较。共享内存和核显未计入。</p>
       </section>
+      </div>
     </template>
   </div>
 </template>

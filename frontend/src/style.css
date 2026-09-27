@@ -68,6 +68,7 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .text-link { color: var(--accent); font-size: 13px; font-weight: 700; }
 .text-link span { margin-left: 8px; font-size: 18px; }
 .section-aside { color: var(--muted); font-size: 12px; }
+.overview-columns { min-width: 0; }
 .gpu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 16px; }
 .gpu-card { background: var(--panel); border: 1px solid var(--line); padding: 28px 32px 0; min-width: 0; }
 .gpu-card-head { display: flex; justify-content: space-between; color: var(--muted); font: 11px "DM Mono", monospace; }
@@ -141,23 +142,42 @@ tbody tr:hover { background: var(--panel-hover); }
 .target-control input:focus { border-color: var(--accent); }
 .chart-frame { height: clamp(320px, 37vw, 520px); padding: 22px 24px 12px; background: var(--panel); border: 1px solid var(--line); }
 .trend-empty { min-height: 320px; }
-.reading-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 12px; }
+.trend-side { grid-column: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; min-width: 0; }
+.trend-side .section-heading { margin-bottom: 16px; }
+.reading-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .reading { display: flex; flex-direction: column; min-height: 118px; padding: 19px 21px; background: var(--panel); border: 1px solid var(--line); border-top: 3px solid var(--line-color); }
 .reading-name { color: var(--muted); font-size: 11px; }
 .reading strong { margin-top: 9px; font-size: 25px; line-height: 1; font-weight: 600; letter-spacing: -.05em; }
 .reading-range { margin-top: 11px; color: var(--soft); font-size: 10px; }
-.detail-summary { margin-top: 86px; }
+.detail-summary { margin-top: 0; }
 .snapshot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
 .snapshot-grid article { display: flex; flex-direction: column; gap: 10px; padding: 22px; background: var(--panel); border: 1px solid var(--line); }
 .snapshot-grid article > span { color: var(--muted); font-size: 12px; }
-.snapshot-grid strong { font-size: 30px; font-weight: 600; letter-spacing: -.06em; }
-.snapshot-grid small { color: var(--muted); font-size: 11px; }
+.snapshot-secondary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); margin-top: 8px; border-top: 1px solid var(--line-soft); }
+.snapshot-secondary div { display: flex; flex-direction: column; gap: 5px; padding-top: 13px; }
+.snapshot-secondary span { color: var(--muted); font-size: 11px; }
+.snapshot-secondary b { font-size: 18px; font-weight: 600; }
+
+@media (min-width: 1800px) {
+  .page-intro { min-height: 192px; padding: 34px 0 26px; }
+  .overview-columns { display: grid; grid-template-columns: minmax(620px, .9fr) minmax(0, 1.6fr); gap: clamp(28px, 2vw, 56px); align-items: start; }
+  .overview-columns > .section-block { min-width: 0; margin-top: 58px; }
+  .overview-columns .gpu-grid { grid-template-columns: 1fr; }
+  .overview-columns .gpu-card h3 { min-height: 0; }
+  .trend-layout { grid-template-columns: 220px minmax(0, 1fr) minmax(360px, 25%); gap: clamp(28px, 2vw, 56px); padding-top: 34px; }
+  .trend-side { grid-column: auto; display: block; padding-left: 28px; border-left: 1px solid var(--line); }
+  .trend-side .reading-grid, .trend-side .snapshot-grid { grid-template-columns: 1fr; }
+  .detail-summary { margin-top: 46px; }
+  .chart-frame { height: clamp(560px, 60vh, 900px); }
+}
 
 @media (max-width: 900px) {
   .site-header { grid-template-columns: 1fr auto; }
   .connection { display: none; }
   .main-nav { gap: 24px; }
   .trend-layout { grid-template-columns: 1fr; gap: 20px; }
+  .trend-side { grid-column: auto; display: block; }
+  .detail-summary { margin-top: 44px; }
   .metric-nav { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 18px; }
   .metric-nav > .eyebrow { margin-bottom: 14px; }
   .metric-group { display: inline-block; margin: 0 20px 8px 0; vertical-align: top; }
