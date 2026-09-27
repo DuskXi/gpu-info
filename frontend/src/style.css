@@ -96,6 +96,7 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .accounting-disclosure summary { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 15px 38px 15px 18px; cursor: pointer; color: var(--muted); font-size: 12px; list-style: none; }
 .accounting-disclosure summary::-webkit-details-marker { display: none; }
 .accounting-disclosure summary strong { color: var(--accent); font-weight: 700; text-align: right; }
+.accounting-summary-source { margin-left: 5px; color: var(--soft); font: 10px "DM Mono", monospace; }
 .accounting-disclosure summary::after { position: absolute; right: 18px; content: '⌄'; color: var(--accent); font-size: 17px; }
 .accounting-disclosure[open] summary::after { content: '⌃'; }
 .accounting-content { padding: 4px 18px 18px; border-top: 1px solid var(--line-soft); }
@@ -123,6 +124,8 @@ tbody tr:hover { background: var(--panel-hover); }
 .numeric { text-align: right; }
 .numeric button { text-align: right; }
 .process-name, .strong { font-weight: 700; }
+.counter-over-capacity { color: #a35c14; }
+.counter-over-capacity small { display: block; margin-top: 3px; font-size: 9px; font-weight: 700; }
 .mono { color: var(--muted); font: 12px "DM Mono", monospace; }
 .empty-cell { text-align: center; color: var(--muted); padding: 40px; }
 .table-more { width: 100%; padding: 16px; background: transparent; border: 1px solid var(--line); border-top: 0; color: var(--accent); font-size: 12px; font-weight: 700; }
@@ -195,6 +198,13 @@ tbody tr:hover { background: var(--panel-hover); }
 .snapshot-secondary div { display: flex; flex-direction: column; gap: 5px; padding-top: 13px; }
 .snapshot-secondary span { color: var(--muted); font-size: 11px; }
 .snapshot-secondary b { font-size: 18px; font-weight: 600; }
+.memory-check-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border: 1px solid var(--line); background: var(--line); }
+.memory-check-grid div { display: flex; flex-direction: column; justify-content: space-between; gap: 12px; min-width: 0; padding: 15px; background: var(--panel); }
+.memory-check-grid span { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.memory-check-grid strong { font: 500 clamp(15px, 1.2vw, 19px) "DM Mono", monospace; white-space: nowrap; }
+.memory-check-note, .memory-counter-alert { margin: 12px 0 0; font-size: 11px; line-height: 1.6; }
+.memory-check-note { color: var(--muted); }
+.memory-counter-alert { padding: 10px 12px; border-left: 2px solid #b36116; background: #fff5e9; color: #7a4112; }
 
 @media (min-width: 1800px) {
   .page-intro { min-height: 192px; padding: 34px 0 26px; }
@@ -205,6 +215,7 @@ tbody tr:hover { background: var(--panel-hover); }
   .trend-layout { grid-template-columns: 220px minmax(0, 1fr) minmax(360px, 25%); gap: clamp(28px, 2vw, 56px); padding-top: 34px; }
   .trend-side { grid-column: auto; display: block; padding-left: 28px; border-left: 1px solid var(--line); }
   .trend-side .reading-grid, .trend-side .snapshot-grid { grid-template-columns: 1fr; }
+  .trend-side .memory-check-grid { grid-template-columns: 1fr 1fr; }
   .detail-summary { margin-top: 46px; }
   .chart-frame { height: clamp(560px, 60vh, 900px); }
 }

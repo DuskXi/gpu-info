@@ -11,7 +11,10 @@ export function memoryAccounts(frame) {
     )
     if (!rows.length) return []
     const processClaimed = rows.reduce((sum, process) => sum + process.claimed_memory, 0)
-    const processLocal = rows.reduce((sum, process) => sum + (process.local_memory ?? 0), 0)
+    const localRows = rows.filter(process => Number.isFinite(process.local_memory))
+    const processLocal = localRows.length
+      ? localRows.reduce((sum, process) => sum + process.local_memory, 0)
+      : null
     return [{
       gpuId: gpu.id,
       nvmlUsed: gpu.memory?.used ?? null,
@@ -20,6 +23,7 @@ export function memoryAccounts(frame) {
       processLocal,
       excess: Math.max(0, processClaimed - adapterUsed),
       processCount: rows.length,
+      localCount: localRows.length,
     }]
   })
 }

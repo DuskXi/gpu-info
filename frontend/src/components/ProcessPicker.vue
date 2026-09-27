@@ -15,7 +15,7 @@ const sortKey = ref('used_memory')
 const descending = ref(true)
 const fields = [
   { key: 'name', label: '进程' },
-  { key: 'used_memory', label: '本地显存' },
+  { key: 'used_memory', label: '本地用量' },
   { key: 'cpu_percent', label: 'CPU' },
   { key: 'disk_bytes_per_sec', label: '磁盘 I/O' },
   { key: 'gpu_percent', label: 'GPU' },
@@ -102,10 +102,10 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutside))
         @keydown.up.prevent="moveFocus(-1)">
         <button v-for="process in rows" :key="process.key" type="button" role="option"
           class="process-option" :aria-selected="process.key === selectedKey"
-          :aria-label="`${process.name}，PID ${process.pid}，本地显存 ${bytes(process.used_memory)}，CPU ${activityPercent(process.cpu_percent)}，磁盘 I/O ${throughput(process.disk_bytes_per_sec)}，GPU ${activityPercent(process.gpu_percent)}`"
+          :aria-label="`${process.name}，PID ${process.pid}，本地用量 ${bytes(process.used_memory)}，CPU ${activityPercent(process.cpu_percent)}，磁盘 I/O ${throughput(process.disk_bytes_per_sec)}，GPU ${activityPercent(process.gpu_percent)}`"
           @click="choose(process)">
           <span class="process-option-name"><strong>{{ process.name }}</strong><small>PID {{ process.pid }} · GPU {{ process.gpu_id }}</small></span>
-          <span data-label="本地显存">{{ bytes(process.used_memory) }}</span>
+          <span data-label="本地用量">{{ bytes(process.used_memory) }}</span>
           <span data-label="CPU">{{ activityPercent(process.cpu_percent) }}</span>
           <span data-label="磁盘">{{ throughput(process.disk_bytes_per_sec) }}</span>
           <span data-label="GPU">{{ activityPercent(process.gpu_percent) }}</span>
@@ -113,7 +113,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutside))
         <div v-if="!rows.length" class="process-picker-empty">没有匹配的进程</div>
       </div>
       <p class="process-picker-note">
-        <template v-if="hasWindowsMemory">本地显存来自 Windows Local Usage；仍可能包含共享窗口表面，进程数值不能相加 · </template>
+        <template v-if="hasWindowsMemory">本地用量来自 Windows Local Usage；可包含共享窗口表面，进程数值不能相加 · </template>
         CPU 为整机占比 · 磁盘为读写速率 · GPU 为最忙引擎，必要时采用 NVML SM 负载
       </p>
     </div>

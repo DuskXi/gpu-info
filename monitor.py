@@ -213,7 +213,10 @@ class GPUMonitor:
         if os.name == "nt":
             self._update_windows_processes(result)
         self._sample_process_activity(result)
-        result["processes"].sort(key=lambda p: p["used_memory"], reverse=True)
+        result["processes"].sort(
+            key=lambda p: p.get("used_memory") if isinstance(p.get("used_memory"), (int, float)) else -1,
+            reverse=True,
+        )
         return result
 
     def _sample_process_activity(self, result: dict[str, Any]) -> None:

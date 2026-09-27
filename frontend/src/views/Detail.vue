@@ -6,7 +6,7 @@ import {
   LineElement, Tooltip, Legend,
 } from 'chart.js'
 import { useMonitorData, procKey } from '../composables/useMonitorData'
-import { number, percent } from '../format'
+import { bytes, number, percent } from '../format'
 import ProcessPicker from '../components/ProcessPicker.vue'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
@@ -32,9 +32,9 @@ const gpuMetrics = [
   { key: 'decoder', label: '解码器', group: '引擎', unit: '%', read: g => g.engines?.decoder },
 ]
 const processMetrics = [
-  { key: 'used_memory', label: '本地显存', group: '内存', unit: 'MB', read: (p) => p?.used_memory == null ? null : p.used_memory / 1048576 },
-  { key: 'claimed_memory', label: '专用记账', group: '内存', unit: 'MB', read: (p) => p?.claimed_memory == null ? null : p.claimed_memory / 1048576 },
-  { key: 'committed_memory', label: '总提交', group: '内存', unit: 'MB', read: (p) => p?.committed_memory == null ? null : p.committed_memory / 1048576 },
+  { key: 'used_memory', label: '本地用量', group: '内存', unit: 'MB', read: (p) => p?.used_memory == null ? null : p.used_memory / 1048576 },
+  { key: 'claimed_memory', label: '专用计数', group: '内存', unit: 'MB', read: (p) => p?.claimed_memory == null ? null : p.claimed_memory / 1048576 },
+  { key: 'committed_memory', label: 'Windows 提交量', group: '内存', unit: 'MB', read: (p) => p?.committed_memory == null ? null : p.committed_memory / 1048576 },
   { key: 'sm_util', label: 'SM 负载', group: '负载', unit: '%', read: (_, u) => u?.sm_util },
   { key: 'mem_util', label: '显存控制器', group: '负载', unit: '%', read: (_, u) => u?.mem_util },
   { key: 'enc_util', label: '编码器', group: '引擎', unit: '%', read: (_, u) => u?.enc_util },
@@ -72,6 +72,12 @@ watch(processOptions, options => {
 }, { immediate: true })
 const processKey = computed(() => selectedProcess.value || processOptions.value[0]?.key || '')
 const selectedProcessInfo = computed(() => processOptions.value.find(p => p.key === processKey.value))
+const selectedProcessGpu = computed(() => gpus.value.find(g => g.id === selectedProcessInfo.value?.gpu_id))
+const counterExceedsCapacity = computed(() =>
+  Number.isFinite(selectedProcessInfo.value?.claimed_memory)
+  && Number.isFinite(selectedProcessGpu.value?.memory?.total)
+  && selectedProcessInfo.value.claimed_memory > selectedProcessGpu.value.memory.total
+)
 const palette = ['#007c96', '#425ec4', '#b36116', '#7953aa', '#b34e66']
 
 function valueAt(frame, id) {
@@ -205,7 +211,7 @@ function chooseProcess(key) {
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
         </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。指标单位单独显示，进程退出后的采样不会伪装为 0。{{ mode === 'process' ? '本地显存更接近实际驻留；进程指标仍可能包含跨进程共享资源，DWM 曲线不等于其独占显存。' : '' }}</p>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? '进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
       </section>
 
       <aside class="trend-side" aria-label="当前读数">
@@ -232,6 +238,18 @@ function chooseProcess(key) {
               </div>
             </article>
           </div>
+        </section>
+
+        <section v-if="mode === 'process' && selectedProcessInfo" class="detail-summary process-memory-summary" aria-label="进程显存口径">
+          <div class="section-heading"><div><p class="eyebrow">MEMORY / ACCOUNTING</p><h2>显存口径</h2></div></div>
+          <div class="memory-check-grid">
+            <div><span>{{ selectedProcessInfo.memory_source === 'Windows GPU counters' ? '进程本地用量 · 含共享' : '进程用量 · NVML' }}</span><strong>{{ bytes(selectedProcessInfo.used_memory) }}</strong></div>
+            <div><span>进程专用计数 · Windows</span><strong>{{ bytes(selectedProcessInfo.claimed_memory) }}</strong></div>
+            <div><span>进程提交量 · Windows</span><strong>{{ bytes(selectedProcessInfo.committed_memory) }}</strong></div>
+            <div><span>GPU {{ selectedProcessInfo.gpu_id }} 设备已用 · NVML</span><strong>{{ bytes(selectedProcessGpu?.memory?.used) }}</strong></div>
+          </div>
+          <p v-if="counterExceedsCapacity" class="memory-counter-alert">专用计数已超过这张 GPU 的物理显存容量，不能解释为该进程实际占用。</p>
+          <p class="memory-check-note">进程计数含共享资源，不能相加，也无法仅凭这些读数拆出 DWM 独占量。提交量不是当前驻留量。</p>
         </section>
       </aside>
     </div>

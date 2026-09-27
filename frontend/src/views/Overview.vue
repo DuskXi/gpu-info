@@ -7,6 +7,7 @@ import { memoryAccounts } from '../accounting'
 const { snapshot } = useMonitorData()
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
+const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
 const processes = computed(() => snapshot.value?.processes ?? [])
 const accounting = computed(() => memoryAccounts(snapshot.value))
 const query = ref('')
@@ -41,6 +42,11 @@ const visibleProcesses = computed(() =>
 function sortBy(key) {
   descending.value = sort.value === key ? !descending.value : key !== 'name'
   sort.value = key
+}
+function counterOverCapacity(proc) {
+  const capacity = gpuCapacity.value.get(proc.gpu_id)
+  return Number.isFinite(proc.claimed_memory) && Number.isFinite(capacity)
+    && proc.claimed_memory > capacity
 }
 </script>
 
@@ -131,16 +137,16 @@ function sortBy(key) {
         <details v-for="account in accounting" :key="account.gpuId" class="accounting-disclosure">
           <summary>
             <span>GPU {{ account.gpuId }} · 显存口径核对</span>
-            <strong>本地合计 {{ bytes(account.processLocal) }} · 专用记账 {{ bytes(account.processClaimed) }}</strong>
+            <strong>设备已用 {{ bytes(account.nvmlUsed) }} <span class="accounting-summary-source">NVML</span></strong>
           </summary>
           <div class="accounting-content">
             <div class="accounting-values">
               <div><span>NVML 设备已用</span><strong>{{ bytes(account.nvmlUsed) }}</strong></div>
               <div><span>Windows 设备专用使用</span><strong>{{ bytes(account.adapterUsed) }}</strong></div>
-              <div><span>{{ account.processCount }} 个进程本地显存合计</span><strong>{{ bytes(account.processLocal) }}</strong></div>
-              <div><span>进程专用记账合计</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
+              <div><span>Σ {{ account.localCount }} 个进程本地用量 · 含重复</span><strong>{{ bytes(account.processLocal) }}</strong></div>
+              <div><span>Σ {{ account.processCount }} 个进程专用计数 · 含重复</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
             </div>
-            <p>本地显存表示当前位于 GPU 本地内存的用量；专用记账可能远大于实际驻留。DWM 和 csrss 可引用其他程序的窗口表面，因此两种进程数值都可能重复计算，无法据此拆出 DWM 独占的显存。</p>
+            <p>设备已用以 NVML 读数为准。Σ 仅用于排查计数差异，不能当作设备占用或剩余显存。本地用量可包含共享窗口表面；Windows 专用计数还可能异常膨胀。DWM 的独占显存不能从这些计数直接拆出。</p>
             <a href="https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/" target="_blank" rel="noopener noreferrer">微软的计数器说明 ↗</a>
           </div>
         </details>
@@ -158,8 +164,8 @@ function sortBy(key) {
               <th><button @click="sortBy('name')">进程 {{ sort === 'name' ? (descending ? '↓' : '↑') : '' }}</button></th>
               <th><button @click="sortBy('pid')">PID {{ sort === 'pid' ? (descending ? '↓' : '↑') : '' }}</button></th>
               <th><button @click="sortBy('gpu_id')">设备 {{ sort === 'gpu_id' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th class="numeric"><button @click="sortBy('used_memory')">本地显存 {{ sort === 'used_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th class="numeric"><button @click="sortBy('claimed_memory')">专用记账 {{ sort === 'claimed_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
+              <th class="numeric"><button @click="sortBy('used_memory')" title="Windows Local Usage；可包含跨进程共享资源">本地用量 {{ sort === 'used_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
+              <th class="numeric"><button @click="sortBy('claimed_memory')" title="Windows Dedicated Usage；可能包含共享资源，也可能异常膨胀">专用计数 {{ sort === 'claimed_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
             </tr></thead>
             <tbody>
               <tr v-for="proc in visibleProcesses" :key="`${proc.gpu_id}:${proc.pid}`">
@@ -167,7 +173,10 @@ function sortBy(key) {
                 <td class="mono">{{ proc.pid }}</td>
                 <td>GPU {{ proc.gpu_id }}</td>
                 <td class="numeric strong">{{ bytes(proc.used_memory) }}</td>
-                <td class="numeric">{{ bytes(proc.claimed_memory) }}</td>
+                <td class="numeric" :class="{ 'counter-over-capacity': counterOverCapacity(proc) }">
+                  {{ bytes(proc.claimed_memory) }}
+                  <small v-if="counterOverCapacity(proc)">超物理容量</small>
+                </td>
               </tr>
               <tr v-if="!visibleProcesses.length"><td colspan="5" class="empty-cell">没有匹配的占用进程</td></tr>
             </tbody>
@@ -176,7 +185,7 @@ function sortBy(key) {
         <button v-if="!query && shownProcesses.length > 20" class="table-more" @click="showAll = !showAll">
           {{ showAll ? '收起进程列表' : `显示全部 ${shownProcesses.length} 个进程` }} <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
         </button>
-        <p class="data-note">本地显存与专用记账来自 Windows 不同计数器。进程列均可能包含跨进程共享资源，不能相加当作设备总量；核显未并入 NVIDIA 列表。</p>
+        <p class="data-note">进程本地用量与专用计数均可能包含跨进程共享资源，不能相加。专用计数不是进程独占 VRAM；核显未并入 NVIDIA 列表。</p>
       </section>
       </div>
     </template>

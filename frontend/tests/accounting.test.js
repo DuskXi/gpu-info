@@ -18,7 +18,19 @@ test('compares matched Windows process claims with the same adapter counter', ()
   }
 
   assert.deepEqual(memoryAccounts(frame), [
-    { gpuId: 0, nvmlUsed: 13, adapterUsed: 12, processClaimed: 13, processLocal: 7, excess: 1, processCount: 2 },
-    { gpuId: 1, nvmlUsed: 4, adapterUsed: 3, processClaimed: 2, processLocal: 1, excess: 0, processCount: 1 },
+    { gpuId: 0, nvmlUsed: 13, adapterUsed: 12, processClaimed: 13, processLocal: 7, excess: 1, processCount: 2, localCount: 2 },
+    { gpuId: 1, nvmlUsed: 4, adapterUsed: 3, processClaimed: 2, processLocal: 1, excess: 0, processCount: 1, localCount: 1 },
   ])
+})
+
+test('missing local readings remain unavailable instead of appearing as zero', () => {
+  const frame = {
+    gpus: [{ id: 0, memory: { used: 12 } }],
+    windows_adapter_memory: [{ gpu_id: 0, dedicated_usage: 11 }],
+    processes: [{ gpu_id: 0, claimed_memory: 20, local_memory: null }],
+  }
+  assert.deepEqual(memoryAccounts(frame), [{
+    gpuId: 0, nvmlUsed: 12, adapterUsed: 11, processClaimed: 20,
+    processLocal: null, excess: 9, processCount: 1, localCount: 0,
+  }])
 })
