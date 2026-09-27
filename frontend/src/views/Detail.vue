@@ -60,7 +60,7 @@ const filteredProcessOptions = computed(() => {
 watch(processSearch, () => { selectedProcess.value = filteredProcessOptions.value[0]?.key || '' })
 const processKey = computed(() => selectedProcess.value || filteredProcessOptions.value[0]?.key || '')
 const selectedProcessInfo = computed(() => processOptions.value.find(p => p.key === processKey.value))
-const palette = ['#2447d8', '#db5b38', '#2d8272', '#9b6b19', '#704fb8']
+const palette = ['#79ded0', '#8dbbf5', '#efbd81', '#c9a6e5', '#ed958f']
 
 function valueAt(frame, id) {
   if (mode.value === 'gpu') {
@@ -102,20 +102,20 @@ const chartOptions = computed(() => ({
   scales: {
     x: {
       grid: { display: false },
-      ticks: { maxTicksLimit: 8, maxRotation: 0, color: '#777a80' },
-      border: { color: '#d9dad5' },
+      ticks: { maxTicksLimit: 8, maxRotation: 0, color: '#a0b8bf' },
+      border: { color: '#38515c' },
     },
     y: {
       beginAtZero: activeMetric.value?.unit === '%',
       suggestedMax: activeMetric.value?.unit === '%' ? 100 : undefined,
-      grid: { color: '#e7e8e4' },
-      ticks: { color: '#777a80', callback: value => `${value} ${activeMetric.value?.unit ?? ''}` },
+      grid: { color: '#2a414b' },
+      ticks: { color: '#a0b8bf', callback: value => `${value} ${activeMetric.value?.unit ?? ''}` },
       border: { display: false },
     },
   },
   plugins: {
-    legend: { display: targets.value.length > 1, position: 'bottom', labels: { usePointStyle: true, boxWidth: 8 } },
-    tooltip: { backgroundColor: '#202429', displayColors: targets.value.length > 1 },
+    legend: { display: targets.value.length > 1, position: 'bottom', labels: { color: '#a0b8bf', usePointStyle: true, boxWidth: 8 } },
+    tooltip: { backgroundColor: '#e9f2f1', titleColor: '#0a1720', bodyColor: '#0a1720', displayColors: targets.value.length > 1 },
   },
 }))
 const readings = computed(() => targets.value.map((target, i) => {
