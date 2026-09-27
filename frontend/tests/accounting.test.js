@@ -10,15 +10,15 @@ test('compares matched Windows process claims with the same adapter counter', ()
       { gpu_id: 1, dedicated_usage: 3 },
     ],
     processes: [
-      { gpu_id: 0, used_memory: 8, memory_source: 'Windows GPU counters' },
-      { gpu_id: 0, used_memory: 5, memory_source: 'Windows GPU counters' },
+      { gpu_id: 0, used_memory: 3, local_memory: 3, claimed_memory: 8, memory_source: 'Windows GPU counters' },
+      { gpu_id: 0, used_memory: 4, local_memory: 4, claimed_memory: 5, memory_source: 'Windows GPU counters' },
       { gpu_id: 0, used_memory: 9, memory_source: 'NVML' },
-      { gpu_id: 1, used_memory: 2, memory_source: 'Windows GPU counters' },
+      { gpu_id: 1, used_memory: 1, local_memory: 1, claimed_memory: 2, memory_source: 'Windows GPU counters' },
     ],
   }
 
   assert.deepEqual(memoryAccounts(frame), [
-    { gpuId: 0, nvmlUsed: 13, adapterUsed: 12, processClaimed: 13, excess: 1, processCount: 2 },
-    { gpuId: 1, nvmlUsed: 4, adapterUsed: 3, processClaimed: 2, excess: 0, processCount: 1 },
+    { gpuId: 0, nvmlUsed: 13, adapterUsed: 12, processClaimed: 13, processLocal: 7, excess: 1, processCount: 2 },
+    { gpuId: 1, nvmlUsed: 4, adapterUsed: 3, processClaimed: 2, processLocal: 1, excess: 0, processCount: 1 },
   ])
 })

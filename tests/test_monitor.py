@@ -61,11 +61,15 @@ class ProcessAccountingTests(unittest.TestCase):
                 return [
                     SimpleNamespace(
                         Name="pid_42_luid_0x00000000_0x000196BD_phys_0",
-                        DedicatedUsage="100", SharedUsage="20",
+                        DedicatedUsage="100", LocalUsage="40",
+                        NonLocalUsage="10", TotalCommitted="55",
+                        SharedUsage="20",
                     ),
                     SimpleNamespace(
                         Name="pid_43_luid_0x00000000_0x0001D7FB_phys_0",
-                        DedicatedUsage="900", SharedUsage="0",
+                        DedicatedUsage="900", LocalUsage="800",
+                        NonLocalUsage="0", TotalCommitted="900",
+                        SharedUsage="0",
                     ),
                 ]
 
@@ -89,7 +93,11 @@ class ProcessAccountingTests(unittest.TestCase):
 
         self.assertEqual(len(result.processes), 1)
         self.assertEqual(result.processes[0]["pid"], 42)
-        self.assertEqual(result.processes[0]["used_memory"], 100)
+        self.assertEqual(result.processes[0]["used_memory"], 40)
+        self.assertEqual(result.processes[0]["local_memory"], 40)
+        self.assertEqual(result.processes[0]["claimed_memory"], 100)
+        self.assertEqual(result.processes[0]["committed_memory"], 55)
+        self.assertEqual(result.processes[0]["nonlocal_memory"], 10)
         self.assertEqual(result.processes[0]["gpu_percent"], 23)
         self.assertEqual(result.adapters, [{
             "gpu_id": 0, "dedicated_usage": 750, "shared_usage": 25,

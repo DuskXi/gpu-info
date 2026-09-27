@@ -32,7 +32,9 @@ const gpuMetrics = [
   { key: 'decoder', label: '解码器', group: '引擎', unit: '%', read: g => g.engines?.decoder },
 ]
 const processMetrics = [
-  { key: 'used_memory', label: '专用分配', group: '内存', unit: 'MB', read: (p) => p?.used_memory == null ? null : p.used_memory / 1048576 },
+  { key: 'used_memory', label: '本地显存', group: '内存', unit: 'MB', read: (p) => p?.used_memory == null ? null : p.used_memory / 1048576 },
+  { key: 'claimed_memory', label: '专用记账', group: '内存', unit: 'MB', read: (p) => p?.claimed_memory == null ? null : p.claimed_memory / 1048576 },
+  { key: 'committed_memory', label: '总提交', group: '内存', unit: 'MB', read: (p) => p?.committed_memory == null ? null : p.committed_memory / 1048576 },
   { key: 'sm_util', label: 'SM 负载', group: '负载', unit: '%', read: (_, u) => u?.sm_util },
   { key: 'mem_util', label: '显存控制器', group: '负载', unit: '%', read: (_, u) => u?.mem_util },
   { key: 'enc_util', label: '编码器', group: '引擎', unit: '%', read: (_, u) => u?.enc_util },
@@ -203,7 +205,7 @@ function chooseProcess(key) {
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
         </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。指标单位单独显示，进程退出后的采样不会伪装为 0。{{ mode === 'process' && processMetric === 'used_memory' ? 'Windows 进程显存包含跨进程共享资源，DWM 曲线不等于其独占的物理显存。' : '' }}</p>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。指标单位单独显示，进程退出后的采样不会伪装为 0。{{ mode === 'process' ? '本地显存更接近实际驻留；进程指标仍可能包含跨进程共享资源，DWM 曲线不等于其独占显存。' : '' }}</p>
       </section>
 
       <aside class="trend-side" aria-label="当前读数">

@@ -21,6 +21,11 @@ const shownProcesses = computed(() => {
     .filter(p => gpuFilter.value === 'all' || p.gpu_id === Number(gpuFilter.value))
     .filter(p => !q || p.name?.toLowerCase().includes(q) || String(p.pid).includes(q))
     .sort((a, b) => {
+      if (sort.value !== 'name') {
+        const av = Number.isFinite(a[sort.value]) ? a[sort.value] : null
+        const bv = Number.isFinite(b[sort.value]) ? b[sort.value] : null
+        if (av == null || bv == null) return av == null ? (bv == null ? 0 : 1) : -1
+      }
       const av = a[sort.value] ?? ''
       const bv = b[sort.value] ?? ''
       const order = typeof av === 'string'
@@ -120,21 +125,22 @@ function sortBy(key) {
 
       <section class="section-block process-section" aria-labelledby="process-heading">
         <div class="section-heading">
-          <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">进程显存记账</h2></div>
+          <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">进程显存</h2></div>
           <span class="section-aside">进程采样 {{ time(snapshot?.processes_sampled_at) }} · GPU / PID 去重</span>
         </div>
         <details v-for="account in accounting" :key="account.gpuId" class="accounting-disclosure">
           <summary>
             <span>GPU {{ account.gpuId }} · 显存口径核对</span>
-            <strong>{{ account.excess > 0 ? `进程账面超出 Windows 设备计数 ${bytes(account.excess)}` : '查看进程与设备的记账差异' }}</strong>
+            <strong>本地合计 {{ bytes(account.processLocal) }} · 专用记账 {{ bytes(account.processClaimed) }}</strong>
           </summary>
           <div class="accounting-content">
             <div class="accounting-values">
               <div><span>NVML 设备已用</span><strong>{{ bytes(account.nvmlUsed) }}</strong></div>
               <div><span>Windows 设备专用使用</span><strong>{{ bytes(account.adapterUsed) }}</strong></div>
-              <div><span>Windows {{ account.processCount }} 个进程账面合计</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
+              <div><span>{{ account.processCount }} 个进程本地显存合计</span><strong>{{ bytes(account.processLocal) }}</strong></div>
+              <div><span>进程专用记账合计</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
             </div>
-            <p>DWM 和 csrss 可引用其他程序的窗口表面，同一份资源会记在多个进程名下。进程合计不能当作实际显存用量，也无法从这些计数器拆出 DWM 自身分配与共享表面。这里的“共享 GPU 内存”指系统内存，并非跨进程共享部分。</p>
+            <p>本地显存表示当前位于 GPU 本地内存的用量；专用记账可能远大于实际驻留。DWM 和 csrss 可引用其他程序的窗口表面，因此两种进程数值都可能重复计算，无法据此拆出 DWM 独占的显存。</p>
             <a href="https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/" target="_blank" rel="noopener noreferrer">微软的计数器说明 ↗</a>
           </div>
         </details>
@@ -152,7 +158,8 @@ function sortBy(key) {
               <th><button @click="sortBy('name')">进程 {{ sort === 'name' ? (descending ? '↓' : '↑') : '' }}</button></th>
               <th><button @click="sortBy('pid')">PID {{ sort === 'pid' ? (descending ? '↓' : '↑') : '' }}</button></th>
               <th><button @click="sortBy('gpu_id')">设备 {{ sort === 'gpu_id' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th class="numeric"><button @click="sortBy('used_memory')">专用分配 {{ sort === 'used_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
+              <th class="numeric"><button @click="sortBy('used_memory')">本地显存 {{ sort === 'used_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
+              <th class="numeric"><button @click="sortBy('claimed_memory')">专用记账 {{ sort === 'claimed_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
             </tr></thead>
             <tbody>
               <tr v-for="proc in visibleProcesses" :key="`${proc.gpu_id}:${proc.pid}`">
@@ -160,15 +167,16 @@ function sortBy(key) {
                 <td class="mono">{{ proc.pid }}</td>
                 <td>GPU {{ proc.gpu_id }}</td>
                 <td class="numeric strong">{{ bytes(proc.used_memory) }}</td>
+                <td class="numeric">{{ bytes(proc.claimed_memory) }}</td>
               </tr>
-              <tr v-if="!visibleProcesses.length"><td colspan="4" class="empty-cell">没有匹配的占用进程</td></tr>
+              <tr v-if="!visibleProcesses.length"><td colspan="5" class="empty-cell">没有匹配的占用进程</td></tr>
             </tbody>
           </table>
         </div>
         <button v-if="!query && shownProcesses.length > 20" class="table-more" @click="showAll = !showAll">
           {{ showAll ? '收起进程列表' : `显示全部 ${shownProcesses.length} 个进程` }} <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
         </button>
-        <p class="data-note">进程列包含跨进程共享的图形资源。设备总量以 NVML 为准；核显计数器未并入 NVIDIA 进程列表。</p>
+        <p class="data-note">本地显存与专用记账来自 Windows 不同计数器。进程列均可能包含跨进程共享资源，不能相加当作设备总量；核显未并入 NVIDIA 列表。</p>
       </section>
       </div>
     </template>

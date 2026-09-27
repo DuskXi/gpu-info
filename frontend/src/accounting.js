@@ -7,16 +7,17 @@ export function memoryAccounts(frame) {
     if (!Number.isFinite(adapterUsed)) return []
     const rows = (frame?.processes ?? []).filter(process =>
       process.gpu_id === gpu.id
-      && process.memory_source === 'Windows GPU counters'
-      && Number.isFinite(process.used_memory)
+      && Number.isFinite(process.claimed_memory)
     )
     if (!rows.length) return []
-    const processClaimed = rows.reduce((sum, process) => sum + process.used_memory, 0)
+    const processClaimed = rows.reduce((sum, process) => sum + process.claimed_memory, 0)
+    const processLocal = rows.reduce((sum, process) => sum + (process.local_memory ?? 0), 0)
     return [{
       gpuId: gpu.id,
       nvmlUsed: gpu.memory?.used ?? null,
       adapterUsed,
       processClaimed,
+      processLocal,
       excess: Math.max(0, processClaimed - adapterUsed),
       processCount: rows.length,
     }]

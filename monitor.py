@@ -355,9 +355,15 @@ class GPUMonitor:
         for process in self._wmi_processes:
             key = (process["gpu_id"], process["pid"])
             if key in existing:
-                existing[key]["used_memory"] = max(existing[key]["used_memory"], process["used_memory"])
+                if existing[key]["memory_source"] != "NVML" and process["used_memory"] is not None:
+                    existing[key]["used_memory"] = process["used_memory"]
+                existing[key]["local_memory"] = process["local_memory"]
+                existing[key]["claimed_memory"] = process["claimed_memory"]
+                existing[key]["committed_memory"] = process["committed_memory"]
+                existing[key]["nonlocal_memory"] = process["nonlocal_memory"]
                 existing[key]["shared_memory"] = process["shared_memory"]
-                existing[key]["memory_source"] = process["memory_source"]
+                if existing[key]["memory_source"] != "NVML":
+                    existing[key]["memory_source"] = process["memory_source"]
                 existing[key]["gpu_percent"] = process["gpu_percent"]
             else:
                 result["processes"].append(dict(process))
@@ -417,7 +423,10 @@ class GPUMonitor:
                 continue
             dedicated = self._read(lambda: int(counter.DedicatedUsage), 0)
             shared = self._read(lambda: int(counter.SharedUsage), 0)
-            if dedicated <= 0 and shared <= 0:
+            local = self._read(lambda: int(counter.LocalUsage))
+            nonlocal_usage = self._read(lambda: int(counter.NonLocalUsage))
+            committed = self._read(lambda: int(counter.TotalCommitted))
+            if not any((dedicated, shared, local, nonlocal_usage, committed)):
                 continue
             key = (gpu_id, pid)
             if key not in grouped:
@@ -425,14 +434,23 @@ class GPUMonitor:
                     "pid": pid, "name": names.get(pid, "Unknown"),
                     "gpu_id": gpu_id,
                     "gpu_name": gpu_names.get(gpu_id, f"GPU {gpu_id}"),
-                    "used_memory": 0, "shared_memory": 0,
+                    "used_memory": None, "local_memory": None,
+                    "claimed_memory": 0, "committed_memory": None,
+                    "nonlocal_memory": None, "shared_memory": 0,
                     "memory_source": "Windows GPU counters",
                     "gpu_percent": engine_load.get(key),
                 }
-            grouped[key]["used_memory"] += dedicated
+            if local is not None:
+                grouped[key]["local_memory"] = (grouped[key]["local_memory"] or 0) + local
+                grouped[key]["used_memory"] = grouped[key]["local_memory"]
+            if nonlocal_usage is not None:
+                grouped[key]["nonlocal_memory"] = (grouped[key]["nonlocal_memory"] or 0) + nonlocal_usage
+            if committed is not None:
+                grouped[key]["committed_memory"] = (grouped[key]["committed_memory"] or 0) + committed
+            grouped[key]["claimed_memory"] += dedicated
             grouped[key]["shared_memory"] += shared
         return _WindowsMemorySample(
-            [process for process in grouped.values() if process["used_memory"] > 0],
+            list(grouped.values()),
             [adapters[gpu_id] for gpu_id in sorted(adapters)],
         )
 
@@ -520,7 +538,10 @@ class GPUMonitor:
             result["processes"].append({
                 "pid": pid, "name": names.get(pid, "Unknown"),
                 "gpu_id": index, "gpu_name": name,
-                "used_memory": size, "shared_memory": None, "memory_source": "NVML",
+                "used_memory": size, "local_memory": None,
+                "claimed_memory": None, "committed_memory": None,
+                "nonlocal_memory": None, "shared_memory": None,
+                "memory_source": "NVML",
             })
 
     def _capture_utilization(
