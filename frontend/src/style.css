@@ -69,7 +69,7 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .text-link span { margin-left: 8px; font-size: 18px; }
 .section-aside { color: var(--muted); font-size: 12px; }
 .overview-columns { min-width: 0; }
-.gpu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 16px; }
+.gpu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 680px), 1fr)); gap: 16px; }
 .gpu-card { background: var(--panel); border: 1px solid var(--line); padding: 28px 32px 0; min-width: 0; }
 .gpu-card-head { display: flex; justify-content: space-between; color: var(--muted); font: 11px "DM Mono", monospace; }
 .gpu-source { color: var(--accent); }
@@ -80,8 +80,12 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .hero-stat > span { padding-bottom: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .meter { height: 4px; margin: 22px 0 27px; background: var(--line-soft); }
 .meter span { display: block; height: 100%; background: var(--accent); }
-.vram-composition { display: grid; grid-template-columns: 164px minmax(0, 1fr); align-items: center; gap: 30px; margin: 0 0 27px; }
-.vram-pie { width: 164px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgb(18 45 59 / 8%); }
+.vram-composition { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 28px; margin: 0 0 27px; }
+.vram-visuals { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
+.vram-chart { width: 150px; margin: 0; }
+.vram-pie { width: 150px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgb(18 45 59 / 8%); }
+.vram-chart figcaption { margin-top: 8px; color: var(--muted); font-size: 11px; font-weight: 700; text-align: center; }
+.vram-chart figcaption small { display: block; margin-top: 2px; color: var(--soft); font-size: 9px; font-weight: 500; }
 .vram-legend { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .vram-legend > .label { margin-bottom: 4px; font-size: 13px; }
 .vram-legend .label small { margin-left: 7px; color: var(--soft); font: 10px "DM Mono", monospace; }
@@ -257,6 +261,7 @@ tbody tr:hover { background: var(--panel-hover); }
   .metric-nav > .eyebrow { margin-bottom: 14px; }
   .metric-group { display: inline-block; margin: 0 20px 8px 0; vertical-align: top; }
   .metric-group button { width: auto; display: inline-flex; gap: 16px; }
+  .vram-composition { grid-template-columns: 1fr; gap: 18px; }
 }
 @media (max-width: 620px) {
   .site-header { height: 64px; padding: 0 20px; }
@@ -279,8 +284,7 @@ tbody tr:hover { background: var(--panel-hover); }
   .accounting-disclosure summary strong { text-align: left; }
   .accounting-values { grid-template-columns: 1fr; gap: 12px; }
   .gpu-card { padding: 22px 22px 0; }
-  .vram-composition { grid-template-columns: 120px minmax(0, 1fr); gap: 18px; }
-  .vram-pie { width: 120px; }
+  .vram-chart, .vram-pie { width: 120px; }
   .display-panel { padding: 18px 20px; }
   .display-panel-head { align-items: flex-start; flex-direction: column; }
   .table-toolbar { flex-wrap: wrap; }
@@ -301,6 +305,5 @@ tbody tr:hover { background: var(--panel-hover); }
 }
 
 @media (max-width: 460px) {
-  .vram-composition { grid-template-columns: 1fr; gap: 16px; }
-  .vram-pie { width: 140px; }
+  .vram-visuals { gap: 12px; }
 }

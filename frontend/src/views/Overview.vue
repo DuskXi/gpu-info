@@ -119,9 +119,19 @@ function displayLabel(display) {
               <span :style="{ width: `${Math.min(100, gpu.memory?.percent ?? 0)}%` }"></span>
             </div>
             <div v-if="processCompositions.get(gpu.id)?.slices.length" class="vram-composition">
-              <div class="vram-pie" role="img"
-                :aria-label="`GPU ${gpu.id} 进程显存读数分布，${processCompositions.get(gpu.id).processCount} 个进程，合计 ${bytes(processCompositions.get(gpu.id).total)}；共享资源可能重复`"
-                :style="{ background: processPieGradient(processCompositions.get(gpu.id).slices) }">
+              <div class="vram-visuals">
+                <figure class="vram-chart">
+                  <div class="vram-pie" role="img"
+                    :aria-label="`GPU ${gpu.id} 全体进程显存读数分布，${processCompositions.get(gpu.id).processCount} 个进程，合计 ${bytes(processCompositions.get(gpu.id).total)}`"
+                    :style="{ background: processPieGradient(processCompositions.get(gpu.id).slices) }"></div>
+                  <figcaption>全体进程</figcaption>
+                </figure>
+                <figure v-if="processCompositions.get(gpu.id).zoom" class="vram-chart">
+                  <div class="vram-pie" role="img"
+                    :aria-label="`排除 ${processCompositions.get(gpu.id).zoom.excluded} 后，其余进程 ${bytes(processCompositions.get(gpu.id).zoom.total)} 的放大分布`"
+                    :style="{ background: processPieGradient(processCompositions.get(gpu.id).zoom.slices) }"></div>
+                  <figcaption>其余进程放大<small>不含 {{ processCompositions.get(gpu.id).zoom.excluded }}</small></figcaption>
+                </figure>
               </div>
               <div class="vram-legend">
                 <span class="label">进程 VRAM 分布 <small>GPU {{ gpu.id }} · {{ time(snapshot?.processes_sampled_at) }}</small></span>
@@ -130,7 +140,7 @@ function displayLabel(display) {
                   <span :title="slice.pid == null ? slice.name : `${slice.name} · PID ${slice.pid}`">{{ slice.name }}<small v-if="slice.pid != null"> · {{ slice.pid }}</small></span>
                   <strong>{{ bytes(slice.value) }}</strong>
                 </div>
-                <p>进程读数合计 {{ bytes(processCompositions.get(gpu.id).total) }}；NVML 整卡已用 {{ bytes(processCompositions.get(gpu.id).deviceUsed) }}。共享资源可能重复计入，扇区表示进程读数比例。</p>
+                <p>进程读数合计 {{ bytes(processCompositions.get(gpu.id).total) }}；NVML 整卡已用 {{ bytes(processCompositions.get(gpu.id).deviceUsed) }}。{{ processCompositions.get(gpu.id).zoom ? '右图只比较排除最大进程后的剩余读数。' : '' }}共享资源可能重复计入。</p>
               </div>
             </div>
             <p v-else class="vram-composition-empty">暂无可用的进程显存读数</p>

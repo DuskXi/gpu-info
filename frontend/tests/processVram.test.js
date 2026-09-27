@@ -34,3 +34,18 @@ test('NVML process usage is shown when no Windows local reading exists', () => {
   assert.equal(chart.total, 50)
   assert.deepEqual(chart.slices.map(slice => slice.pid), [7])
 })
+
+test('small process slices get a magnified view with the same colors', () => {
+  const chart = processVramComposition({
+    gpus: [{ id: 0, memory: { used: 120 } }],
+    processes: [
+      { gpu_id: 0, pid: 1, name: 'compute', local_memory: 90 },
+      { gpu_id: 0, pid: 2, name: 'dwm', local_memory: 7 },
+      { gpu_id: 0, pid: 3, name: 'browser', local_memory: 3 },
+    ],
+  }, 0)
+  assert.equal(chart.zoom.total, 10)
+  assert.deepEqual(chart.zoom.slices.map(slice => slice.percent), [70, 30])
+  assert.deepEqual(chart.zoom.slices.map(slice => slice.color),
+    chart.slices.slice(1).map(slice => slice.color))
+})

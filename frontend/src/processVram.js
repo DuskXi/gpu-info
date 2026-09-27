@@ -1,4 +1,4 @@
-const colors = ['#007c96', '#4264b2', '#387f73', '#8b61a3', '#b36d38', '#62848f']
+const colors = ['#007c96', '#334fc1', '#bd6425', '#8e45ab', '#23775b', '#667b8e']
 
 export function processVramComposition(frame, gpuId, visibleCount = 5) {
   const deviceUsed = frame?.gpus?.find(gpu => gpu.id === gpuId)?.memory?.used ?? null
@@ -17,21 +17,35 @@ export function processVramComposition(frame, gpuId, visibleCount = 5) {
   const total = rows.reduce((sum, row) => sum + row.value, 0)
   if (!total) return { total: 0, deviceUsed, slices: [], processCount: 0 }
 
-  const top = rows.slice(0, visibleCount)
-  const rest = rows.slice(visibleCount)
+  const kept = Math.max(1, visibleCount)
+  const top = rows.slice(0, kept)
+  const rest = rows.slice(kept)
   if (rest.length) {
     top.push({ pid: null, name: `其他 ${rest.length} 个进程`,
       value: rest.reduce((sum, row) => sum + row.value, 0) })
   }
+  const slices = top.map((row, index) => ({
+    ...row,
+    color: colors[index % colors.length],
+    percent: row.value / total * 100,
+  }))
+  const remaining = total - slices[0].value
+  const zoom = slices[0].percent >= 70 && slices.length > 2 && remaining > 0
+    ? {
+        excluded: slices[0].name,
+        total: remaining,
+        slices: slices.slice(1).map(slice => ({
+          ...slice,
+          percent: slice.value / remaining * 100,
+        })),
+      }
+    : null
   return {
     total,
     deviceUsed,
     processCount: rows.length,
-    slices: top.map((row, index) => ({
-      ...row,
-      color: colors[index % colors.length],
-      percent: row.value / total * 100,
-    })),
+    slices,
+    zoom,
   }
 }
 
