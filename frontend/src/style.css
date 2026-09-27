@@ -1,18 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap');
 
 :root {
-  color-scheme: dark;
-  --bg: #0a1720;
-  --panel: #12252f;
-  --panel-hover: #1b3540;
-  --text: #e9f2f1;
-  --muted: #a0b8bf;
-  --soft: #85a0a9;
-  --line: #38515c;
-  --line-soft: #2a414b;
-  --accent: #79ded0;
-  --alert: #efbd81;
-  --alert-line: #765a3f;
+  color-scheme: light;
+  --bg: #edf5f7;
+  --panel: #fbfeff;
+  --panel-hover: #e1eff2;
+  --text: #122d3b;
+  --muted: #526e7a;
+  --soft: #627f8b;
+  --line: #b7cdd5;
+  --line-soft: #d8e6eb;
+  --accent: #006f87;
+  --alert: #a65313;
+  --alert-line: #d8b393;
   font-family: Manrope, "Noto Sans SC", "Microsoft YaHei", sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -33,8 +33,8 @@ a { color: inherit; text-decoration: none; }
   border-bottom: 1px solid var(--line); background: var(--bg);
 }
 .brand { display: inline-flex; align-items: center; gap: 16px; width: max-content; font-size: 11px; font-weight: 800; letter-spacing: .15em; }
-.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; background: var(--accent); color: var(--bg); font-size: 18px; letter-spacing: -.14em; padding-right: 3px; }
-.brand-mark span { color: var(--bg); }
+.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; background: var(--accent); color: var(--panel); font-size: 18px; letter-spacing: -.14em; padding-right: 3px; }
+.brand-mark span { color: var(--panel); }
 .main-nav { align-self: stretch; display: flex; gap: 40px; }
 .main-nav a { display: flex; align-items: center; border-bottom: 2px solid transparent; color: var(--muted); font-size: 13px; font-weight: 700; }
 .main-nav a:hover, .main-nav a.active { color: var(--text); border-bottom-color: var(--accent); }
