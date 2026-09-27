@@ -1,602 +1,390 @@
-import os
-import struct
+"""GPU collector using NVML and Windows per-process counters.
+
+CUDA Driver device identity queries never create a CUDA context.
+"""
+
 import logging
+import os
+import re
+import struct
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Any, Callable
+
 import psutil
-from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-PID_CACHE_TTL = 2.0
+
+def _pci_key(value: str | bytes) -> tuple[int, int, int, int] | None:
+    text = value.decode() if isinstance(value, bytes) else value
+    match = re.search(r"([0-9a-f]+):([0-9a-f]{2}):([0-9a-f]{2})\.([0-7])$", text.lower())
+    if match is None:
+        return None
+    return (
+        int(match.group(1), 16), int(match.group(2), 16),
+        int(match.group(3), 16), int(match.group(4), 16),
+    )
 
 
-def _luid_bytes_to_key(luid: bytes) -> str:
-    low, high = struct.unpack("<II", luid[:8])
-    return f"0x{high:08X}_0x{low:08X}"
-
-
-def _parse_gpu_counter_name(name: str) -> Dict[str, Any]:
-    parts = name.split("_")
-    out: Dict[str, Any] = {"pid": None, "luid": None, "phys": None}
-    i = 0
-    while i < len(parts):
-        if parts[i] == "pid" and i + 1 < len(parts):
-            try:
-                out["pid"] = int(parts[i + 1])
-            except ValueError:
-                pass
-            i += 2
-        elif parts[i] == "luid" and i + 2 < len(parts):
-            out["luid"] = f"{parts[i + 1]}_{parts[i + 2]}"
-            i += 3
-        elif parts[i] == "phys" and i + 1 < len(parts):
-            out["phys"] = parts[i + 1]
-            i += 2
-        else:
-            i += 1
-    return out
+def _counter_identity(name: str) -> tuple[int, str] | None:
+    parts = name.upper().split("_")
+    try:
+        pid = int(parts[parts.index("PID") + 1])
+        offset = parts.index("LUID") + 1
+        return pid, f"{parts[offset]}_{parts[offset + 1]}"
+    except (ValueError, IndexError):
+        return None
 
 
 class GPUMonitor:
-    def __init__(self):
+    def __init__(self) -> None:
+        self.nvml: Any = None
+        self._static: dict[int, dict[str, Any]] = {}
+        self._names: dict[int, str] = {}
+        self._names_at = 0.0
+        self._util_since: dict[int, int] = {}
+        self._wmi: Any = None
+        self._wmi_initialized = False
+        self._luid_by_gpu: dict[str, int] | None = None
+        self._wmi_error: str | None = None
+        self._wmi_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-wmi")
+            if os.name == "nt" else None
+        )
+        self._wmi_future: Future[list[dict[str, Any]]] | None = None
+        self._wmi_processes: list[dict[str, Any]] = []
+        self._wmi_requested_at = 0.0
+        self._wmi_sampled_at: float | None = None
         try:
             import pynvml
             pynvml.nvmlInit()
-            self.pynvml = pynvml
-            self.nvml_initialized = True
-        except Exception:
-            self.nvml_initialized = False
+            self.nvml = pynvml
+        except Exception as exc:
+            logger.warning("NVML unavailable: %s", exc)
 
-        self.nvidia_luid_map: Dict[str, Dict[str, Any]] = {}
-        self._pid_name_cache: Dict[int, str] = {}
-        self._pid_name_cache_time: float = 0.0
-        self._wmi = None
-        self._wmi_executor: Optional[ThreadPoolExecutor] = None
-
-        # CUDA Runtime device info (static, fetch once)
-        self.cuda_available = False
-        self.cuda_props: List[Dict[str, Any]] = []
-        self.cuda_versions: Dict[str, int] = {}
-        try:
-            from cuda.bindings import runtime as cudart
-            self._cudart = cudart
-            err, count = cudart.cudaGetDeviceCount()
-            if count > 0:
-                self.cuda_available = True
-                for i in range(count):
-                    err, p = cudart.cudaGetDeviceProperties(i)
-                    dev_name = (
-                        p.name.decode() if isinstance(p.name, bytes) else str(p.name)
-                    )
-                    luid_key = _luid_bytes_to_key(p.luid)
-                    self.nvidia_luid_map[luid_key] = {
-                        "gpu_id": i,
-                        "name": dev_name,
-                    }
-                    self.cuda_props.append({
-                        "sm_count": p.multiProcessorCount,
-                        "max_threads_per_sm": p.maxThreadsPerMultiProcessor,
-                        "max_threads_per_block": p.maxThreadsPerBlock,
-                        "warp_size": p.warpSize,
-                        "max_warps_per_sm": p.maxThreadsPerMultiProcessor // p.warpSize,
-                        "max_blocks_per_sm": p.maxBlocksPerMultiProcessor,
-                        "shared_mem_per_block": p.sharedMemPerBlock,
-                        "shared_mem_per_sm": p.sharedMemPerMultiprocessor,
-                        "shared_mem_per_block_optin": p.sharedMemPerBlockOptin,
-                        "regs_per_block": p.regsPerBlock,
-                        "regs_per_sm": p.regsPerMultiprocessor,
-                        "l2_cache_size": p.l2CacheSize,
-                        "persisting_l2_max": p.persistingL2CacheMaxSize,
-                        "total_global_mem": p.totalGlobalMem,
-                        "total_const_mem": p.totalConstMem,
-                        "compute_capability": f"{p.major}.{p.minor}",
-                        "concurrent_kernels": p.concurrentKernels,
-                        "async_engine_count": p.asyncEngineCount,
-                        "ecc_enabled": p.ECCEnabled,
-                        "compute_preemption": p.computePreemptionSupported,
-                        "cooperative_launch": p.cooperativeLaunch,
-                        "managed_memory": p.managedMemory,
-                        "unified_addressing": p.unifiedAddressing,
-                        "mps_enabled": p.mpsEnabled,
-                    })
-                try:
-                    err, rtv = cudart.cudaRuntimeGetVersion()
-                    err, drv = cudart.cudaDriverGetVersion()
-                    self.cuda_versions = {
-                        "runtime": rtv, "driver": drv
-                    }
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        if os.name == "nt":
-            self._wmi_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="wmi"
-            )
+    def close(self) -> None:
+        if self._wmi_executor is not None:
+            released = False
             try:
-                self._wmi_executor.submit(self._init_wmi).result(timeout=15)
-            except Exception as e:
-                logger.warning("WMI initialization failed: %s", e)
-                self._wmi_executor.shutdown(wait=False, cancel_futures=True)
-                self._wmi_executor = None
+                self._wmi_executor.submit(self._release_wmi).result(timeout=12)
+                released = True
+            except Exception as exc:
+                logger.warning("WMI shutdown incomplete: %s", exc)
+            self._wmi_executor.shutdown(wait=released, cancel_futures=True)
+        if self.nvml is not None:
+            self.nvml.nvmlShutdown()
+            self.nvml = None
 
-    def _init_wmi(self) -> None:
-        import pythoncom
-        import wmi
+    @staticmethod
+    def _read(fn: Callable[[], Any], default: Any = None) -> Any:
+        try:
+            return fn()
+        except Exception:
+            return default
 
-        pythoncom.CoInitialize()
-        self._wmi = wmi.WMI()
-
-    def _get_pid_name_map(self) -> Dict[int, str]:
-        now = time.monotonic()
-        if (
-            self._pid_name_cache
-            and now - self._pid_name_cache_time < PID_CACHE_TTL
-        ):
-            return self._pid_name_cache
-
-        pid_name_map: Dict[int, str] = {}
+    def _process_names(self) -> dict[int, str]:
+        if time.monotonic() - self._names_at < 5:
+            return self._names
+        names: dict[int, str] = {}
         for proc in psutil.process_iter(["pid", "name"]):
             try:
-                pid_name_map[proc.info["pid"]] = proc.info["name"]
-            except Exception:
-                pass
-        self._pid_name_cache = pid_name_map
-        self._pid_name_cache_time = now
-        return pid_name_map
+                names[proc.info["pid"]] = proc.info["name"] or "Unknown"
+            except (psutil.Error, KeyError):
+                continue
+        self._names = names
+        self._names_at = time.monotonic()
+        return names
 
-    def _aggregate_processes(
-        self, process_list: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        aggregated: Dict[Tuple[int, Any], Dict[str, Any]] = {}
-        for p in process_list:
-            key = (p["pid"], p["gpu_id"])
-            if key not in aggregated:
-                aggregated[key] = p
-            else:
-                aggregated[key]["used_memory"] += p["used_memory"]
-                aggregated[key]["shared_memory"] += p.get("shared_memory", 0)
+    def _static_info(self, index: int, handle: Any) -> dict[str, Any]:
+        if index not in self._static:
+            nv = self.nvml
+            capability = self._read(lambda: nv.nvmlDeviceGetCudaComputeCapability(handle))
+            self._static[index] = {
+                "uuid": self._read(lambda: nv.nvmlDeviceGetUUID(handle), ""),
+                "architecture": self._read(lambda: str(nv.nvmlDeviceGetArchitecture(handle)), ""),
+                "compute_capability": ".".join(map(str, capability)) if capability else "",
+                "memory_bus_width": self._read(lambda: nv.nvmlDeviceGetMemoryBusWidth(handle)),
+                "vbios": self._read(lambda: nv.nvmlDeviceGetVbiosVersion(handle), ""),
+            }
+        return self._static[index]
 
-        result = list(aggregated.values())
-        result.sort(key=lambda x: x["used_memory"], reverse=True)
+    def capture(self) -> dict[str, Any]:
+        """One coherent sample; no per-field thread races or stale-value reuse."""
+        vm = psutil.virtual_memory()
+        result: dict[str, Any] = {
+            "system": {
+                "cpu_percent": psutil.cpu_percent(interval=None),
+                "memory": {"total": vm.total, "used": vm.used, "percent": vm.percent},
+            },
+            "gpus": [], "processes": [], "process_utilization": [],
+            "source": "NVML" if self.nvml is not None else "unavailable",
+            "errors": [],
+        }
+        if self.nvml is None:
+            result["errors"].append("NVML unavailable; NVIDIA metrics cannot be read")
+            return result
+        nv = self.nvml
+        names = self._process_names()
+        driver = self._read(nv.nvmlSystemGetDriverVersion, "")
+        try:
+            count = nv.nvmlDeviceGetCount()
+        except Exception as exc:
+            result["errors"].append(f"GPU enumeration failed: {exc}")
+            return result
+        for index in range(count):
+            try:
+                handle = nv.nvmlDeviceGetHandleByIndex(index)
+                memory = nv.nvmlDeviceGetMemoryInfo(handle)
+                utilization = self._read(lambda: nv.nvmlDeviceGetUtilizationRates(handle))
+                name = self._read(lambda: nv.nvmlDeviceGetName(handle), f"GPU {index}")
+                total, used = int(memory.total), int(memory.used)
+                power = self._read(lambda: nv.nvmlDeviceGetPowerUsage(handle))
+                power_limit = self._read(lambda: nv.nvmlDeviceGetEnforcedPowerLimit(handle))
+                bar1 = self._read(lambda: nv.nvmlDeviceGetBAR1MemoryInfo(handle))
+                result["gpus"].append({
+                    "id": index, "name": name, "driver_version": driver,
+                    "memory": {
+                        "total": total, "used": used, "free": int(memory.free),
+                        "percent": used / total * 100 if total else 0,
+                    },
+                    "utilization": {
+                        "gpu": getattr(utilization, "gpu", None),
+                        "memory": getattr(utilization, "memory", None),
+                    },
+                    "temperature": self._read(
+                        lambda: nv.nvmlDeviceGetTemperature(handle, nv.NVML_TEMPERATURE_GPU)
+                    ),
+                    "fan_speed": self._read(lambda: nv.nvmlDeviceGetFanSpeed(handle)),
+                    "power": {
+                        "usage": power / 1000 if power is not None else None,
+                        "limit": power_limit / 1000 if power_limit is not None else None,
+                    },
+                    "clocks": {
+                        "graphics": self._read(
+                            lambda: nv.nvmlDeviceGetClockInfo(handle, nv.NVML_CLOCK_GRAPHICS)
+                        ),
+                        "memory": self._read(
+                            lambda: nv.nvmlDeviceGetClockInfo(handle, nv.NVML_CLOCK_MEM)
+                        ),
+                    },
+                    "engines": {
+                        "encoder": self._read(lambda: nv.nvmlDeviceGetEncoderUtilization(handle)[0]),
+                        "decoder": self._read(lambda: nv.nvmlDeviceGetDecoderUtilization(handle)[0]),
+                    },
+                    "pcie": {
+                        "tx": self._read(lambda: nv.nvmlDeviceGetPcieThroughput(
+                            handle, nv.NVML_PCIE_UTIL_TX_BYTES
+                        )),
+                        "rx": self._read(lambda: nv.nvmlDeviceGetPcieThroughput(
+                            handle, nv.NVML_PCIE_UTIL_RX_BYTES
+                        )),
+                    },
+                    "bar1": {
+                        "total": getattr(bar1, "bar1Total", None),
+                        "used": getattr(bar1, "bar1Used", None),
+                    },
+                    "performance_state": self._read(
+                        lambda: f"P{nv.nvmlDeviceGetPerformanceState(handle)}"
+                    ),
+                    "device_info": self._static_info(index, handle),
+                })
+                self._capture_processes(result, index, handle, name, total, names)
+                self._capture_utilization(result, index, handle, names)
+            except Exception as exc:
+                logger.warning("GPU %d capture failed: %s", index, exc)
+                result["errors"].append(f"GPU {index}: {exc}")
+        if os.name == "nt":
+            self._update_windows_processes(result)
+        result["processes"].sort(key=lambda p: p["used_memory"], reverse=True)
         return result
 
-    def _get_process_info_wmi(
-        self, pid_name_map: Dict[int, str]
-    ) -> List[Dict[str, Any]]:
-        if self._wmi is None or not self.nvidia_luid_map:
-            return []
+    def _cuda_luid_map(self) -> dict[str, int]:
+        """Match CUDA Driver LUIDs to NVML PCI IDs without creating a context."""
+        import ctypes
 
-        process_list: List[Dict[str, Any]] = []
-        try:
-            gpu_counters = (
-                self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory()
+        driver = ctypes.WinDLL("nvcuda.dll")
+        driver.cuInit.argtypes = [ctypes.c_uint]
+        driver.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        driver.cuDeviceGet.argtypes = [ctypes.POINTER(ctypes.c_int), ctypes.c_int]
+        driver.cuDeviceGetLuid.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint), ctypes.c_int
+        ]
+        driver.cuDeviceGetPCIBusId.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+        if driver.cuInit(0) != 0:
+            raise RuntimeError("CUDA driver initialization failed")
+        count = ctypes.c_int()
+        if driver.cuDeviceGetCount(ctypes.byref(count)) != 0:
+            raise RuntimeError("CUDA device enumeration failed")
+        nvml_by_pci = {}
+        for index in range(self.nvml.nvmlDeviceGetCount()):
+            handle = self.nvml.nvmlDeviceGetHandleByIndex(index)
+            pci = self.nvml.nvmlDeviceGetPciInfo(handle).busId
+            key = _pci_key(pci)
+            if key is not None:
+                nvml_by_pci[key] = index
+        luid_map: dict[str, int] = {}
+        for ordinal in range(count.value):
+            device = ctypes.c_int()
+            if driver.cuDeviceGet(ctypes.byref(device), ordinal) != 0:
+                continue
+            bus_id = ctypes.create_string_buffer(32)
+            luid = ctypes.create_string_buffer(8)
+            node_mask = ctypes.c_uint()
+            if driver.cuDeviceGetPCIBusId(bus_id, 32, device.value) != 0:
+                continue
+            if driver.cuDeviceGetLuid(luid, ctypes.byref(node_mask), device.value) != 0:
+                continue
+            bus_key = _pci_key(bus_id.value)
+            if bus_key is None:
+                continue
+            gpu_id = nvml_by_pci.get(bus_key)
+            if gpu_id is None:
+                continue
+            low, high = struct.unpack("<II", luid.raw)
+            luid_map[f"0X{high:08X}_0X{low:08X}"] = gpu_id
+        return luid_map
+
+    def _update_windows_processes(self, result: dict[str, Any]) -> None:
+        if self._luid_by_gpu is None:
+            try:
+                self._luid_by_gpu = self._cuda_luid_map()
+                if not self._luid_by_gpu:
+                    raise RuntimeError("No NVIDIA LUID could be matched to NVML")
+            except Exception as exc:
+                self._wmi_error = f"Windows GPU identity mapping failed: {exc}"
+                self._luid_by_gpu = {}
+        if not self._luid_by_gpu:
+            result["errors"].append(self._wmi_error or "Windows GPU identity unavailable")
+            return
+        collected_this_tick = False
+        if self._wmi_future is not None and self._wmi_future.done():
+            try:
+                self._wmi_processes = self._wmi_future.result()
+                self._wmi_sampled_at = time.time()
+                self._wmi_error = None
+            except Exception as exc:
+                self._wmi_error = f"Windows GPU process counters unavailable: {exc}"
+            self._wmi_future = None
+            collected_this_tick = True
+        if (
+            not collected_this_tick and self._wmi_future is None
+            and time.monotonic() - self._wmi_requested_at >= 2
+        ):
+            gpu_names = {g["id"]: g["name"] for g in result["gpus"]}
+            assert self._wmi_executor is not None
+            self._wmi_future = self._wmi_executor.submit(
+                self._query_windows_processes, self._process_names().copy(), gpu_names
             )
-            for counter in gpu_counters:
-                inst = _parse_gpu_counter_name(counter.Name)
-                pid = inst["pid"]
-                luid = inst["luid"]
-                if pid is None or luid is None:
-                    continue
+            self._wmi_requested_at = time.monotonic()
+        if self._wmi_error:
+            result["errors"].append(self._wmi_error)
+        existing = {(p["gpu_id"], p["pid"]): p for p in result["processes"]}
+        for process in self._wmi_processes:
+            key = (process["gpu_id"], process["pid"])
+            if key in existing:
+                existing[key]["used_memory"] = max(existing[key]["used_memory"], process["used_memory"])
+                existing[key]["shared_memory"] = process["shared_memory"]
+                existing[key]["memory_source"] = process["memory_source"]
+            else:
+                result["processes"].append(dict(process))
+        result["processes_sampled_at"] = self._wmi_sampled_at
+        result["source"] = "NVML + Windows GPU counters"
 
-                gpu_info = self.nvidia_luid_map.get(luid)
-                if gpu_info is None:
-                    continue
-
-                dedicated_bytes = int(counter.DedicatedUsage)
-                shared_bytes = int(counter.SharedUsage)
-                if dedicated_bytes <= 0 and shared_bytes <= 0:
-                    continue
-
-                process_list.append({
-                    "pid": pid,
-                    "name": pid_name_map.get(pid, "Unknown"),
-                    "gpu_id": gpu_info["gpu_id"],
-                    "gpu_name": gpu_info["name"],
-                    "used_memory": dedicated_bytes,
-                    "shared_memory": shared_bytes,
-                })
-        except Exception as e:
-            logger.warning("WMI process info query failed: %s", e)
-            return []
-
-        return self._aggregate_processes(process_list)
-
-    def get_system_info(self) -> Dict[str, Any]:
-        return {
-            "cpu_percent": psutil.cpu_percent(interval=None),
-            "memory": {
-                "total": psutil.virtual_memory().total,
-                "used": psutil.virtual_memory().used,
-                "percent": psutil.virtual_memory().percent
-            }
-        }
-
-    def get_gpu_info(self) -> List[Dict[str, Any]]:
-        if not self.nvml_initialized:
-            return []
-
-        gpu_list = []
-        device_count = self.pynvml.nvmlDeviceGetCount()
-
-        # Driver version (once)
+    def _query_windows_processes(
+        self, names: dict[int, str], gpu_names: dict[int, str]
+    ) -> list[dict[str, Any]]:
         try:
-            driver_version = self.pynvml.nvmlSystemGetDriverVersion()
-        except self.pynvml.NVMLError:
-            driver_version = "N/A"
+            if self._wmi is None:
+                import pythoncom
+                import wmi
 
-        for i in range(device_count):
-            handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
-            name = self.pynvml.nvmlDeviceGetName(handle)
-            memory = self.pynvml.nvmlDeviceGetMemoryInfo(handle)
-            utilization = self.pynvml.nvmlDeviceGetUtilizationRates(handle)
+                pythoncom.CoInitialize()
+                self._wmi_initialized = True
+                self._wmi = wmi.WMI()
+            counters = self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory()
+        except Exception as exc:
+            raise RuntimeError(f"WMI query failed: {exc}") from exc
+        grouped: dict[tuple[int, int], dict[str, Any]] = {}
+        luid_map = self._luid_by_gpu
+        assert luid_map is not None
+        for counter in counters:
+            identity = _counter_identity(counter.Name)
+            if identity is None:
+                continue
+            pid, luid = identity
+            gpu_id = luid_map.get(luid)
+            if gpu_id is None:
+                continue
+            dedicated = self._read(lambda: int(counter.DedicatedUsage), 0)
+            shared = self._read(lambda: int(counter.SharedUsage), 0)
+            if dedicated <= 0 and shared <= 0:
+                continue
+            key = (gpu_id, pid)
+            if key not in grouped:
+                grouped[key] = {
+                    "pid": pid, "name": names.get(pid, "Unknown"),
+                    "gpu_id": gpu_id,
+                    "gpu_name": gpu_names.get(gpu_id, f"GPU {gpu_id}"),
+                    "used_memory": 0, "shared_memory": 0,
+                    "memory_source": "Windows GPU counters",
+                }
+            grouped[key]["used_memory"] += dedicated
+            grouped[key]["shared_memory"] += shared
+        return [process for process in grouped.values() if process["used_memory"] > 0]
 
-            # --- Basic metrics (already had) ---
-            try:
-                temp = self.pynvml.nvmlDeviceGetTemperature(
-                    handle, self.pynvml.NVML_TEMPERATURE_GPU)
-            except self.pynvml.NVMLError:
-                temp = 0
+    def _release_wmi(self) -> None:
+        if self._wmi_initialized:
+            import gc
+            self._wmi = None
+            gc.collect()
+            self._wmi_initialized = False
 
-            try:
-                fan_speed = self.pynvml.nvmlDeviceGetFanSpeed(handle)
-            except self.pynvml.NVMLError:
-                fan_speed = 0
-
-            try:
-                power_usage = self.pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0
-                power_limit = self.pynvml.nvmlDeviceGetEnforcedPowerLimit(handle) / 1000.0
-            except self.pynvml.NVMLError:
-                power_usage = 0
-                power_limit = 0
-
-            try:
-                enc_util, _ = self.pynvml.nvmlDeviceGetEncoderUtilization(handle)
-            except self.pynvml.NVMLError:
-                enc_util = 0
-
-            try:
-                dec_util, _ = self.pynvml.nvmlDeviceGetDecoderUtilization(handle)
-            except self.pynvml.NVMLError:
-                dec_util = 0
-
-            try:
-                clock_graphics = self.pynvml.nvmlDeviceGetClockInfo(
-                    handle, self.pynvml.NVML_CLOCK_GRAPHICS)
-                clock_mem = self.pynvml.nvmlDeviceGetClockInfo(
-                    handle, self.pynvml.NVML_CLOCK_MEM)
-            except self.pynvml.NVMLError:
-                clock_graphics = 0
-                clock_mem = 0
-
-            try:
-                pcie_tx = self.pynvml.nvmlDeviceGetPcieThroughput(
-                    handle, self.pynvml.NVML_PCIE_UTIL_TX_BYTES)
-                pcie_rx = self.pynvml.nvmlDeviceGetPcieThroughput(
-                    handle, self.pynvml.NVML_PCIE_UTIL_RX_BYTES)
-            except self.pynvml.NVMLError:
-                pcie_tx = 0
-                pcie_rx = 0
-
-            # --- NEW: Static device info ---
-            try:
-                cuda_cap = self.pynvml.nvmlDeviceGetCudaComputeCapability(handle)
-                cuda_cap_str = f"{cuda_cap[0]}.{cuda_cap[1]}"
-            except self.pynvml.NVMLError:
-                cuda_cap_str = "N/A"
-
-            try:
-                num_cores = self.pynvml.nvmlDeviceGetNumGpuCores(handle)
-            except self.pynvml.NVMLError:
-                num_cores = 0
-
-            try:
-                arch = self.pynvml.nvmlDeviceGetArchitecture(handle)
-            except self.pynvml.NVMLError:
-                arch = -1
-
-            arch_map = {
-                2: "Kepler", 3: "Maxwell", 4: "Pascal",
-                5: "Volta", 6: "Turing", 7: "Ampere",
-                8: "Ada Lovelace", 9: "Hopper", 10: "Blackwell",
-            }
-            arch_name = arch_map.get(arch, f"Unknown ({arch})")
-
-            try:
-                mem_bus_width = self.pynvml.nvmlDeviceGetMemoryBusWidth(handle)
-            except self.pynvml.NVMLError:
-                mem_bus_width = 0
-
-            try:
-                vbios = self.pynvml.nvmlDeviceGetVbiosVersion(handle)
-            except self.pynvml.NVMLError:
-                vbios = "N/A"
-
-            try:
-                uuid = self.pynvml.nvmlDeviceGetUUID(handle)
-            except self.pynvml.NVMLError:
-                uuid = "N/A"
-
-            # --- NEW: BAR1 memory ---
-            try:
-                bar1 = self.pynvml.nvmlDeviceGetBAR1MemoryInfo(handle)
-                bar1_total = bar1.bar1Total
-                bar1_used = bar1.bar1Used
-            except self.pynvml.NVMLError:
-                bar1_total = 0
-                bar1_used = 0
-
-            # --- NEW: Performance state ---
-            try:
-                pstate = self.pynvml.nvmlDeviceGetPerformanceState(handle)
-            except self.pynvml.NVMLError:
-                pstate = -1
-
-            # --- NEW: Fan RPM & num fans ---
-            try:
-                fan_rpm = self.pynvml.nvmlDeviceGetFanSpeedRPM(handle)
-            except self.pynvml.NVMLError:
-                fan_rpm = 0
-
-            try:
-                num_fans = self.pynvml.nvmlDeviceGetNumFans(handle)
-            except self.pynvml.NVMLError:
-                num_fans = 0
-
-            # --- NEW: PCIe link info ---
-            try:
-                pcie_gen = self.pynvml.nvmlDeviceGetCurrPcieLinkGeneration(handle)
-                pcie_width = self.pynvml.nvmlDeviceGetCurrPcieLinkWidth(handle)
-                pcie_max_gen = self.pynvml.nvmlDeviceGetMaxPcieLinkGeneration(handle)
-                pcie_max_width = self.pynvml.nvmlDeviceGetMaxPcieLinkWidth(handle)
-            except self.pynvml.NVMLError:
-                pcie_gen = 0
-                pcie_width = 0
-                pcie_max_gen = 0
-                pcie_max_width = 0
-
-            # --- NEW: JPEG / OFA engine utilization ---
-            try:
-                jr = self.pynvml.nvmlDeviceGetJpgUtilization(handle)
-                jpg_util = jr[0] if isinstance(jr, (list, tuple)) else jr
-            except self.pynvml.NVMLError:
-                jpg_util = 0
-
-            try:
-                ofr = self.pynvml.nvmlDeviceGetOfaUtilization(handle)
-                ofa_util = ofr[0] if isinstance(ofr, (list, tuple)) else ofr
-            except self.pynvml.NVMLError:
-                ofa_util = 0
-
-            # --- NEW: Total energy consumption ---
-            try:
-                total_energy_mj = self.pynvml.nvmlDeviceGetTotalEnergyConsumption(handle)
-                total_energy_kwh = total_energy_mj / 3_600_000_000.0
-            except self.pynvml.NVMLError:
-                total_energy_kwh = 0
-
-            # --- NEW: Temperature margin ---
-            try:
-                temp_margin = self.pynvml.nvmlDeviceGetMarginTemperature(handle)
-            except self.pynvml.NVMLError:
-                temp_margin = 0
-
-            # --- NEW: Clock throttle reasons ---
-            try:
-                throttle = self.pynvml.nvmlDeviceGetCurrentClocksThrottleReasons(handle)
-            except self.pynvml.NVMLError:
-                throttle = 0
-
-            throttle_reasons = []
-            reason_map = {
-                0x01: "Idle",
-                0x02: "App Clock Setting",
-                0x04: "SW Power Cap",
-                0x08: "HW Slowdown",
-                0x10: "Sync Boost",
-                0x20: "SW Thermal Slowdown",
-                0x40: "HW Thermal Slowdown",
-                0x80: "HW Power Brake Slowdown",
-                0x100: "Display Clock Setting",
-            }
-            for bit, reason in reason_map.items():
-                if throttle & bit:
-                    throttle_reasons.append(reason)
-            if not throttle_reasons:
-                throttle_reasons.append("None")
-
-            # --- NEW: Power management limits ---
-            try:
-                pmd = self.pynvml
-                power_default = pmd.nvmlDeviceGetPowerManagementDefaultLimit(
-                    handle) / 1000.0
-                constraints = pmd.nvmlDeviceGetPowerManagementLimitConstraints(
-                    handle)
-                power_min = constraints[0] / 1000.0
-                power_max = constraints[1] / 1000.0
-            except self.pynvml.NVMLError:
-                power_default = 0
-                power_min = 0
-                power_max = 0
-
-            # --- NEW: Supported memory clocks ---
-            try:
-                supported_mem_clocks = list(
-                    self.pynvml.nvmlDeviceGetSupportedMemoryClocks(handle))
-            except self.pynvml.NVMLError:
-                supported_mem_clocks = []
-
-            gpu_list.append({
-                "id": i,
-                "name": name,
-                "driver_version": driver_version,
-                "memory": {
-                    "total": memory.total,
-                    "used": memory.used,
-                    "free": memory.free,
-                    "percent": (memory.used / memory.total) * 100 if memory.total > 0 else 0
-                },
-                "utilization": {
-                    "gpu": utilization.gpu,
-                    "memory": utilization.memory
-                },
-                "temperature": temp,
-                "temperature_margin": temp_margin,
-                "fan_speed": fan_speed,
-                "fan_rpm": fan_rpm,
-                "num_fans": num_fans,
-                "power": {
-                    "usage": power_usage,
-                    "limit": power_limit,
-                    "default_limit": power_default,
-                    "min_limit": power_min,
-                    "max_limit": power_max,
-                },
-                "clocks": {
-                    "graphics": clock_graphics,
-                    "memory": clock_mem,
-                },
-                "engines": {
-                    "encoder": enc_util,
-                    "decoder": dec_util,
-                    "jpeg": jpg_util,
-                    "ofa": ofa_util,
-                },
-                "pcie": {
-                    "tx": pcie_tx,
-                    "rx": pcie_rx,
-                    "gen": pcie_gen,
-                    "width": pcie_width,
-                    "max_gen": pcie_max_gen,
-                    "max_width": pcie_max_width,
-                },
-                "device_info": {
-                    "uuid": uuid,
-                    "architecture": arch_name,
-                    "cuda_capability": cuda_cap_str,
-                    "num_cores": num_cores,
-                    "memory_bus_width": mem_bus_width,
-                    "vbios_version": vbios,
-                    "supported_mem_clocks": supported_mem_clocks,
-                },
-                "bar1": {
-                    "total": bar1_total,
-                    "used": bar1_used,
-                },
-                "performance_state": f"P{pstate}" if pstate >= 0 else "N/A",
-                "throttle_reasons": throttle_reasons,
-                "total_energy_kwh": round(total_energy_kwh, 4),
+    def _capture_processes(
+        self, result: dict[str, Any], index: int, handle: Any, name: str,
+        total: int, names: dict[int, str],
+    ) -> None:
+        nv = self.nvml
+        by_pid: dict[int, int] = {}
+        getters = (
+            nv.nvmlDeviceGetComputeRunningProcesses,
+            nv.nvmlDeviceGetGraphicsRunningProcesses,
+        )
+        for getter in getters:
+            for proc in self._read(lambda: getter(handle), []):
+                size = getattr(proc, "usedGpuMemory", 0) or 0
+                if not isinstance(size, int) or size <= 0 or size > total:
+                    continue
+                # The same PID can appear in both NVML lists for one allocation.
+                by_pid[proc.pid] = max(by_pid.get(proc.pid, 0), size)
+        for pid, size in by_pid.items():
+            result["processes"].append({
+                "pid": pid, "name": names.get(pid, "Unknown"),
+                "gpu_id": index, "gpu_name": name,
+                "used_memory": size, "shared_memory": None, "memory_source": "NVML",
             })
 
-        return gpu_list
-
-    def get_process_info(self) -> List[Dict[str, Any]]:
-        pid_name_map = self._get_pid_name_map()
-
-        if os.name == "nt":
-            if self._wmi_executor is None:
-                return []
-            try:
-                return self._wmi_executor.submit(
-                    self._get_process_info_wmi, pid_name_map
-                ).result(timeout=10)
-            except Exception as e:
-                logger.warning("WMI process info failed: %s", e)
-                return []
-
-        if not self.nvml_initialized:
-            return []
-
-        process_list: List[Dict[str, Any]] = []
-        device_count = self.pynvml.nvmlDeviceGetCount()
-        for i in range(device_count):
-            handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
-            try:
-                gpu_name = self.pynvml.nvmlDeviceGetName(handle)
-            except self.pynvml.NVMLError:
-                gpu_name = f"GPU {i}"
-
-            compute_processes = self.pynvml.nvmlDeviceGetComputeRunningProcesses(
-                handle
-            )
-            graphics_processes = self.pynvml.nvmlDeviceGetGraphicsRunningProcesses(
-                handle
-            )
-            all_processes = compute_processes + graphics_processes
-
-            for p in all_processes:
-                pid = p.pid
-                used_bytes = p.usedGpuMemory if p.usedGpuMemory else 0
-                if used_bytes > 0:
-                    process_list.append({
-                        "pid": pid,
-                        "name": pid_name_map.get(pid, "Unknown"),
-                        "gpu_id": i,
-                        "gpu_name": gpu_name,
-                        "used_memory": used_bytes,
-                        "shared_memory": 0,
-                    })
-
-        return self._aggregate_processes(process_list)
-
-    def get_process_utilization(self) -> List[Dict[str, Any]]:
-        """Get per-process GPU utilization (SM, Mem, Enc, Dec)."""
-        if not self.nvml_initialized:
-            return []
-
-        pid_name_map = self._get_pid_name_map()
-
-        result: List[Dict[str, Any]] = []
-        device_count = self.pynvml.nvmlDeviceGetCount()
-
-        for i in range(device_count):
-            handle = self.pynvml.nvmlDeviceGetHandleByIndex(i)
-            try:
-                procs = self.pynvml.nvmlDeviceGetProcessUtilization(
-                    handle, 0
-                )
-                for p in procs:
-                    result.append({
-                        "pid": p.pid,
-                        "name": pid_name_map.get(p.pid, "Unknown"),
-                        "gpu_id": i,
-                        "sm_util": p.smUtil,
-                        "mem_util": p.memUtil,
-                        "enc_util": p.encUtil,
-                        "dec_util": p.decUtil,
-                    })
-            except self.pynvml.NVMLError:
-                pass
-
-        return result
-
-    def get_cuda_info(self) -> Dict[str, Any]:
-        """Get CUDA runtime info: device props + live memory."""
-        if not self.cuda_available:
-            return {"available": False}
-
-        mem_info = []
-        try:
-            for i in range(len(self.cuda_props)):
-                err = self._cudart.cudaSetDevice(i)
-                err, free, total = self._cudart.cudaMemGetInfo()
-                mem_info.append({
-                    "free": free, "total": total,
-                    "used": total - free,
-                    "percent": ((total - free) / total * 100)
-                    if total > 0 else 0,
-                })
-        except Exception:
-            pass
-
-        return {
-            "available": True,
-            "versions": self.cuda_versions,
-            "devices": self.cuda_props,
-            "memory": mem_info,
-        }
+    def _capture_utilization(
+        self, result: dict[str, Any], index: int, handle: Any, names: dict[int, str],
+    ) -> None:
+        nv = self.nvml
+        samples = self._read(
+            lambda: nv.nvmlDeviceGetProcessUtilization(handle, self._util_since.get(index, 0)), []
+        )
+        latest: dict[int, Any] = {}
+        newest = self._util_since.get(index, 0)
+        for sample in samples:
+            timestamp = getattr(sample, "timeStamp", 0)
+            newest = max(newest, timestamp)
+            if sample.pid not in latest or timestamp > getattr(latest[sample.pid], "timeStamp", 0):
+                latest[sample.pid] = sample
+        self._util_since[index] = newest
+        for pid, sample in latest.items():
+            result["process_utilization"].append({
+                "pid": pid, "name": names.get(pid, "Unknown"), "gpu_id": index,
+                "sm_util": sample.smUtil, "mem_util": sample.memUtil,
+                "enc_util": sample.encUtil, "dec_util": sample.decUtil,
+            })
 
 
 monitor = GPUMonitor()

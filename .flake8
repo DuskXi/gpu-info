@@ -1,3 +1,4 @@
 [flake8]
 ignore = F541, E203, W503
 max-line-length = 200
+exclude = .venv, frontend/node_modules, frontend/dist, .pnpm-store, .git

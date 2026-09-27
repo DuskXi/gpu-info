@@ -10,3 +10,6 @@ wheels/
 .venv
 frontend/node_modules/
 frontend/dist/
+.pnpm-store/
+_cuda*.txt
+_lint.txt
