@@ -1,0 +1,22 @@
+[project]
+name = "gpu-info"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "cuda-bindings[cuda12]>=13.2.0",
+  "cuda-python>=13.2.0",
+  "fastapi>=0.135.2",
+  "nvidia-ml-py>=13.595.45",
+  "pip>=26.0.1",
+  "psutil>=7.2.2",
+  "uvicorn>=0.42.0",
+  "websockets>=16.0",
+]
+
+[project.optional-dependencies]
+windows = [
+  "pywin32>=306",
+  "wmi>=1.5.1",
+]
