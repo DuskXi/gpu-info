@@ -3,12 +3,16 @@ import { computed, ref } from 'vue'
 import { useMonitorData } from '../composables/useMonitorData'
 import { bytes, number, percent, time } from '../format'
 import { memoryAccounts } from '../accounting'
+import { processPieGradient, processVramComposition } from '../processVram'
 
 const { snapshot } = useMonitorData()
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
 const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
 const processes = computed(() => snapshot.value?.processes ?? [])
+const processCompositions = computed(() => new Map(
+  gpus.value.map(gpu => [gpu.id, processVramComposition(snapshot.value, gpu.id)])
+))
 const accounting = computed(() => memoryAccounts(snapshot.value))
 const displayState = computed(() => snapshot.value?.display_state)
 const displayEvents = computed(() => [...(snapshot.value?.display_events ?? [])].reverse())
@@ -49,13 +53,6 @@ function counterOverCapacity(proc) {
   const capacity = gpuCapacity.value.get(proc.gpu_id)
   return Number.isFinite(proc.claimed_memory) && Number.isFinite(capacity)
     && proc.claimed_memory > capacity
-}
-function vramParts(gpu) {
-  const total = gpu.memory?.total
-  const used = gpu.memory?.used
-  if (!Number.isFinite(total) || total <= 0 || !Number.isFinite(used)) return null
-  const occupied = Math.max(0, Math.min(total, used))
-  return { used: occupied, free: total - occupied, percent: occupied / total * 100 }
 }
 function displayLabel(display) {
   const resolution = display.width && display.height ? `${display.width} × ${display.height}` : '分辨率未知'
@@ -121,18 +118,22 @@ function displayLabel(display) {
             <div class="meter" role="meter" :aria-valuenow="gpu.memory?.percent ?? 0" aria-valuemin="0" aria-valuemax="100" aria-label="显存占用率">
               <span :style="{ width: `${Math.min(100, gpu.memory?.percent ?? 0)}%` }"></span>
             </div>
-            <div v-if="vramParts(gpu)" class="vram-composition">
+            <div v-if="processCompositions.get(gpu.id)?.slices.length" class="vram-composition">
               <div class="vram-pie" role="img"
-                :aria-label="`GPU ${gpu.id} 真实显存：已用 ${bytes(vramParts(gpu).used)}，可用 ${bytes(vramParts(gpu).free)}`"
-                :style="{ background: `conic-gradient(var(--accent) 0 ${vramParts(gpu).percent}%, var(--line-soft) ${vramParts(gpu).percent}% 100%)` }">
+                :aria-label="`GPU ${gpu.id} 进程显存读数分布，${processCompositions.get(gpu.id).processCount} 个进程，合计 ${bytes(processCompositions.get(gpu.id).total)}；共享资源可能重复`"
+                :style="{ background: processPieGradient(processCompositions.get(gpu.id).slices) }">
               </div>
               <div class="vram-legend">
-                <span class="label">真实显存组成 <small>NVML / GPU {{ gpu.id }}</small></span>
-                <div><i class="legend-used"></i><span>已用</span><strong>{{ bytes(vramParts(gpu).used) }}</strong></div>
-                <div><i class="legend-free"></i><span>可用</span><strong>{{ bytes(vramParts(gpu).free) }}</strong></div>
-                <p>按整卡容量划分；共享资源无法可靠拆给单个进程。</p>
+                <span class="label">进程 VRAM 分布 <small>GPU {{ gpu.id }} · {{ time(snapshot?.processes_sampled_at) }}</small></span>
+                <div v-for="slice in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'">
+                  <i :style="{ background: slice.color }"></i>
+                  <span :title="slice.pid == null ? slice.name : `${slice.name} · PID ${slice.pid}`">{{ slice.name }}<small v-if="slice.pid != null"> · {{ slice.pid }}</small></span>
+                  <strong>{{ bytes(slice.value) }}</strong>
+                </div>
+                <p>进程读数合计 {{ bytes(processCompositions.get(gpu.id).total) }}；NVML 整卡已用 {{ bytes(processCompositions.get(gpu.id).deviceUsed) }}。共享资源可能重复计入，扇区表示进程读数比例。</p>
               </div>
             </div>
+            <p v-else class="vram-composition-empty">暂无可用的进程显存读数</p>
             <div class="gpu-metrics">
               <div><span>GPU 负载</span><strong>{{ percent(gpu.utilization?.gpu) }}</strong></div>
               <div><span>显存控制器</span><strong>{{ percent(gpu.utilization?.memory) }}</strong></div>
