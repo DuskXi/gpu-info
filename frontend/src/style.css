@@ -78,23 +78,47 @@ h1 { margin-bottom: 12px; font-size: clamp(44px, 5vw, 78px); font-weight: 600; l
 .hero-stat div { display: flex; flex-direction: column; gap: 3px; }
 .hero-stat strong { font-size: clamp(35px, 3.4vw, 54px); line-height: 1.1; font-weight: 600; letter-spacing: -.07em; }
 .hero-stat > span { padding-bottom: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-.meter { height: 4px; margin: 22px 0 27px; background: var(--line-soft); }
-.meter span { display: block; height: 100%; background: var(--accent); }
+.vram-bars { margin: 20px 0 25px; }
+.vram-bar-heading { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.vram-bar-heading > span:last-child { text-align: right; font: 10px "DM Mono", monospace; }
+.vram-bar-heading small { margin-left: 5px; color: var(--soft); font: 9px "DM Mono", monospace; }
+.meter { display: flex; width: 100%; height: 10px; margin: 7px 0 15px; background: var(--line-soft); }
+.meter:last-child { margin-bottom: 0; }
+.meter button { flex: none; min-width: 1px; height: 100%; padding: 0; border: 0; border-radius: 0; cursor: crosshair; }
+.meter button:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--text); outline-offset: 2px; }
+.device-meter .device-used { background: #0072b2; }
+.device-meter .device-free { background: var(--line-soft); }
+.process-meter button + button { box-shadow: inset 1px 0 var(--panel); }
 .vram-composition { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: 28px; margin: 0 0 27px; }
 .vram-visuals { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 16px; }
 .vram-chart { width: 150px; margin: 0; }
-.vram-pie { width: 150px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgb(18 45 59 / 8%); }
+.vram-pie { width: 150px; aspect-ratio: 1; border-radius: 50%; border: 1px solid rgb(18 45 59 / 8%); cursor: crosshair; }
 .vram-chart figcaption { margin-top: 8px; color: var(--muted); font-size: 11px; font-weight: 700; text-align: center; }
 .vram-chart figcaption small { display: block; margin-top: 2px; color: var(--soft); font-size: 9px; font-weight: 500; }
 .vram-legend { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
 .vram-legend > .label { margin-bottom: 4px; font-size: 13px; }
 .vram-legend .label small { margin-left: 7px; color: var(--soft); font: 10px "DM Mono", monospace; }
-.vram-legend > div { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 9px; font-size: 12px; }
+.vram-legend-row { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 9px; width: 100%; padding: 2px 0; background: none; border: 0; color: var(--text); text-align: left; cursor: crosshair; font-size: 12px; }
+.vram-legend-row:hover, .vram-legend-row:focus-visible { background: var(--panel-hover); outline: none; }
 .vram-legend i { width: 12px; height: 12px; border-radius: 50%; box-shadow: 0 0 0 1px rgb(18 45 59 / 16%); }
-.vram-legend div span { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-.vram-legend div span small { color: var(--soft); font: 10px "DM Mono", monospace; }
-.vram-legend div strong { font: 500 14px "DM Mono", monospace; }
+.vram-legend-row span { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.vram-legend-row span small { color: var(--soft); font: 10px "DM Mono", monospace; }
+.vram-legend-row strong { font: 500 14px "DM Mono", monospace; }
 .vram-legend p { margin: 2px 0 0; color: var(--soft); font-size: 10px; line-height: 1.6; }
+.vram-tooltip { position: fixed; z-index: 100; width: 252px; max-height: min(390px, 65vh); overflow: hidden; padding: 14px 16px; border: 1px solid var(--line); background: var(--panel); box-shadow: 0 12px 28px rgb(18 45 59 / 17%); pointer-events: none; }
+.vram-tooltip-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.vram-tooltip-head i { flex: none; width: 12px; height: 12px; border-radius: 50%; }
+.vram-tooltip-head strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.vram-tooltip > small { display: block; margin: 4px 0 10px 20px; color: var(--soft); font: 10px "DM Mono", monospace; }
+.vram-tooltip-reading { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.vram-tooltip-reading strong { font: 500 22px "DM Mono", monospace; }
+.vram-tooltip-reading span { color: var(--muted); font-size: 10px; }
+.vram-tooltip p { margin: 10px 0 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.vram-tooltip-members { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+.vram-tooltip-members div { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 9px; }
+.vram-tooltip-members div span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vram-tooltip-members div strong { flex: none; font: 500 9px "DM Mono", monospace; }
+.vram-tooltip-members > small { color: var(--soft); font-size: 9px; }
 .vram-composition-empty { margin: 0 0 27px; color: var(--soft); font-size: 12px; }
 .gpu-metrics { display: grid; grid-template-columns: 1fr 1fr; border-top: 1px solid var(--line-soft); }
 .gpu-metrics div { padding: 17px 0; display: flex; flex-direction: column; gap: 7px; border-bottom: 1px solid var(--line-soft); }

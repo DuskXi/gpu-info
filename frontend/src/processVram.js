@@ -12,6 +12,7 @@ export function processVramComposition(frame, gpuId, visibleCount = 5) {
       // reading. NVML process usage is retained where Windows has no reading.
       value: Number.isFinite(row.local_memory) ? row.local_memory
         : row.memory_source === 'NVML' ? row.used_memory : null,
+      source: Number.isFinite(row.local_memory) ? 'Windows 本地显存用量' : 'NVML 进程读数',
     }))
     .filter(row => Number.isFinite(row.value) && row.value > 0)
     .sort((a, b) => b.value - a.value)
@@ -23,7 +24,7 @@ export function processVramComposition(frame, gpuId, visibleCount = 5) {
   const rest = rows.slice(kept)
   if (rest.length) {
     top.push({ pid: null, name: `其他 ${rest.length} 个进程`,
-      value: rest.reduce((sum, row) => sum + row.value, 0) })
+      value: rest.reduce((sum, row) => sum + row.value, 0), members: rest })
   }
   const slices = top.map((row, index) => ({
     ...row,
@@ -48,6 +49,19 @@ export function processVramComposition(frame, gpuId, visibleCount = 5) {
     slices,
     zoom,
   }
+}
+
+export function processPieSliceAt(slices, x, y) {
+  const radius = Math.hypot(x, y)
+  if (radius > 1 || !slices.length) return -1
+  const angle = (Math.atan2(x, -y) + 2 * Math.PI) % (2 * Math.PI)
+  const position = angle / (2 * Math.PI) * 100
+  let end = 0
+  for (let index = 0; index < slices.length; index++) {
+    end += slices[index].percent
+    if (position < end || index === slices.length - 1) return index
+  }
+  return -1
 }
 
 export function processPieGradient(slices) {

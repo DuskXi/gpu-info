@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { processVramComposition } from '../src/processVram.js'
+import { processPieSliceAt, processVramComposition } from '../src/processVram.js'
 
 test('pie groups process local readings without claiming a physical device partition', () => {
   const frame = {
@@ -18,7 +18,16 @@ test('pie groups process local readings without claiming a physical device parti
   assert.equal(chart.deviceUsed, 100)
   assert.deepEqual(chart.slices.map(slice => [slice.name, slice.value]),
     [['compute', 80], ['dwm', 40], ['其他 1 个进程', 10]])
+  assert.deepEqual(chart.slices[2].members.map(member => member.pid), [3])
   assert.ok(Math.abs(chart.slices.reduce((sum, slice) => sum + slice.percent, 0) - 100) < 1e-9)
+})
+
+test('pie hover resolves clockwise sectors and ignores the square corners', () => {
+  const slices = [{ percent: 25 }, { percent: 25 }, { percent: 50 }]
+  assert.equal(processPieSliceAt(slices, 0.5, -0.5), 0)
+  assert.equal(processPieSliceAt(slices, 0.5, 0.5), 1)
+  assert.equal(processPieSliceAt(slices, -0.5, 0), 2)
+  assert.equal(processPieSliceAt(slices, 0.9, 0.9), -1)
 })
 
 test('NVML process usage is shown when no Windows local reading exists', () => {
