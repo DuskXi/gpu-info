@@ -10,6 +10,7 @@ import re
 import struct
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
+from types import SimpleNamespace
 from typing import Any, Callable, NamedTuple
 
 import psutil
@@ -58,6 +59,8 @@ class GPUMonitor:
         self._util_since: dict[int, int] = {}
         self._wmi: Any = None
         self._wmi_initialized = False
+        self._pdh_query: Any = None
+        self._pdh_counters: dict[str, Any] = {}
         self._luid_by_gpu: dict[str, int] | None = None
         self._wmi_error: str | None = None
         self._wmi_executor = (
@@ -344,7 +347,8 @@ class GPUMonitor:
             collected_this_tick = True
         if (
             not collected_this_tick and self._wmi_future is None
-            and time.monotonic() - self._wmi_requested_at >= 2
+            and time.monotonic() - self._wmi_requested_at
+            >= (15 if self._wmi is not None else 2)
         ):
             gpu_names = {g["id"]: g["name"] for g in result["gpus"]}
             assert self._wmi_executor is not None
@@ -377,25 +381,18 @@ class GPUMonitor:
     def _query_windows_processes(
         self, names: dict[int, str], gpu_names: dict[int, str]
     ) -> _WindowsMemorySample:
-        try:
-            if self._wmi is None:
-                import pythoncom
-                import wmi
-
-                pythoncom.CoInitialize()
-                self._wmi_initialized = True
-                self._wmi = wmi.WMI()
-            counters = self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory()
-        except Exception as exc:
-            raise RuntimeError(f"WMI query failed: {exc}") from exc
         grouped: dict[tuple[int, int], dict[str, Any]] = {}
         luid_map = self._luid_by_gpu
         assert luid_map is not None
+        if self._wmi is None:
+            try:
+                counters, adapter_counters, engine_load = self._read_pdh_snapshot(luid_map)
+            except Exception as exc:
+                logger.warning("PDH GPU counters unavailable; trying WMI: %s", exc)
+                counters, adapter_counters, engine_load = self._read_wmi_snapshot(luid_map)
+        else:
+            counters, adapter_counters, engine_load = self._read_wmi_snapshot(luid_map)
         adapters: dict[int, dict[str, Any]] = {}
-        adapter_counters = self._read(
-            lambda: self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory(),
-            [],
-        )
         for counter in adapter_counters:
             match = re.search(
                 r"luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)", counter.Name, re.IGNORECASE
@@ -415,7 +412,6 @@ class GPUMonitor:
             adapter["shared_usage"] += self._read(
                 lambda: int(counter.SharedUsage), 0
             )
-        engine_load = self._read_engine_load(luid_map)
         for counter in counters:
             identity = _counter_identity(counter.Name)
             if identity is None:
@@ -456,6 +452,98 @@ class GPUMonitor:
             list(grouped.values()),
             [adapters[gpu_id] for gpu_id in sorted(adapters)],
         )
+
+    def _read_wmi_snapshot(
+        self, luid_map: dict[str, int]
+    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], float]]:
+        try:
+            if self._wmi is None:
+                import pythoncom
+                import wmi
+
+                pythoncom.CoInitialize()
+                self._wmi_initialized = True
+                self._wmi = wmi.WMI()
+            processes = self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory()
+            adapters = self._wmi.Win32_PerfFormattedData_GPUPerformanceCounters_GPUAdapterMemory()
+        except Exception as exc:
+            raise RuntimeError(f"WMI query failed: {exc}") from exc
+        return processes, adapters, self._read_engine_load(luid_map)
+
+    def _read_pdh_snapshot(
+        self, luid_map: dict[str, int]
+    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], float]]:
+        import win32pdh
+
+        if self._pdh_query is None:
+            query = win32pdh.OpenQuery()
+            specs = {
+                "local": r"\GPU Process Memory(*)\Local Usage",
+                "dedicated": r"\GPU Process Memory(*)\Dedicated Usage",
+                "committed": r"\GPU Process Memory(*)\Total Committed",
+                "nonlocal": r"\GPU Process Memory(*)\Non Local Usage",
+                "shared": r"\GPU Process Memory(*)\Shared Usage",
+                "adapter_dedicated": r"\GPU Adapter Memory(*)\Dedicated Usage",
+                "adapter_shared": r"\GPU Adapter Memory(*)\Shared Usage",
+                "engine": r"\GPU Engine(*)\Utilization Percentage",
+            }
+            try:
+                handles = {
+                    key: win32pdh.AddCounter(query, path)
+                    for key, path in specs.items()
+                }
+            except Exception:
+                win32pdh.CloseQuery(query)
+                raise
+            self._pdh_query = query
+            self._pdh_counters = handles
+        win32pdh.CollectQueryData(self._pdh_query)
+
+        def values(key: str, fmt: int = win32pdh.PDH_FMT_LARGE) -> dict[str, Any]:
+            return self._read(
+                lambda: win32pdh.GetFormattedCounterArray(self._pdh_counters[key], fmt),
+                {},
+            )
+
+        process_values = {
+            key: values(key)
+            for key in ("local", "dedicated", "committed", "nonlocal", "shared")
+        }
+        instance_names = set().union(*(rows.keys() for rows in process_values.values()))
+        processes = [
+            SimpleNamespace(
+                Name=name,
+                LocalUsage=process_values["local"].get(name),
+                DedicatedUsage=process_values["dedicated"].get(name),
+                TotalCommitted=process_values["committed"].get(name),
+                NonLocalUsage=process_values["nonlocal"].get(name),
+                SharedUsage=process_values["shared"].get(name),
+            )
+            for name in instance_names
+        ]
+        adapter_dedicated = values("adapter_dedicated")
+        adapter_shared = values("adapter_shared")
+        adapters = [
+            SimpleNamespace(
+                Name=name,
+                DedicatedUsage=adapter_dedicated.get(name),
+                SharedUsage=adapter_shared.get(name),
+            )
+            for name in adapter_dedicated.keys() | adapter_shared.keys()
+        ]
+        engine_load: dict[tuple[int, int], float] = {}
+        for name, usage in values("engine", win32pdh.PDH_FMT_DOUBLE).items():
+            identity = _counter_identity(name)
+            if identity is None or not isinstance(usage, (int, float)) or not math.isfinite(usage):
+                continue
+            pid, luid = identity
+            gpu_id = luid_map.get(luid)
+            if gpu_id is not None:
+                key = (gpu_id, pid)
+                engine_load[key] = max(
+                    engine_load.get(key, 0.0), min(100.0, max(0.0, float(usage)))
+                )
+        return processes, adapters, engine_load
 
     def _read_engine_load(self, luid_map: dict[str, int]) -> dict[tuple[int, int], float]:
         """Batch-sample PDH engine rates without per-instance WMI COM reads."""
@@ -514,6 +602,12 @@ class GPUMonitor:
             self._read(lambda: win32pdh.CloseQuery(query))
 
     def _release_wmi(self) -> None:
+        if self._pdh_query is not None:
+            import win32pdh
+
+            self._read(lambda: win32pdh.CloseQuery(self._pdh_query))
+            self._pdh_query = None
+            self._pdh_counters = {}
         if self._wmi_initialized:
             import gc
             self._wmi = None

@@ -103,6 +103,61 @@ class ProcessAccountingTests(unittest.TestCase):
             "gpu_id": 0, "dedicated_usage": 750, "shared_usage": 25,
         }])
 
+    def test_pdh_memory_counters_reuse_query_and_include_new_instances(self):
+        collector = GPUMonitor.__new__(GPUMonitor)
+        collector._wmi = None
+        collector._wmi_initialized = False
+        collector._pdh_query = None
+        collector._pdh_counters = {}
+        collector._luid_by_gpu = {"0X00000000_0X000196BD": 0}
+        calls = {"opened": 0, "added": 0, "collected": 0, "closed": 0}
+        process_name = "pid_3200_luid_0x00000000_0x000196BD_phys_0"
+        new_process_name = "pid_42_luid_0x00000000_0x000196BD_phys_0"
+        adapter_name = "luid_0x00000000_0x000196BD_phys_0"
+
+        def array(path, _format):
+            if "GPU Adapter Memory" in path:
+                return {adapter_name: 700 if path.endswith("Dedicated Usage") else 10}
+            if "GPU Engine" in path:
+                return {process_name + "_eng_0": 0.5}
+            readings = {
+                "Local Usage": 40,
+                "Dedicated Usage": 100,
+                "Total Committed": 55,
+                "Non Local Usage": 15,
+                "Shared Usage": 20,
+            }
+            result = {process_name: readings[path.rsplit("\\", 1)[-1]]}
+            if calls["collected"] == 2:
+                result[new_process_name] = 5
+            return result
+
+        fake_pdh = SimpleNamespace(
+            PDH_FMT_LARGE=1, PDH_FMT_DOUBLE=2,
+            OpenQuery=lambda: calls.__setitem__("opened", calls["opened"] + 1) or object(),
+            AddCounter=lambda _query, path: calls.__setitem__("added", calls["added"] + 1) or path,
+            CollectQueryData=lambda _query: calls.__setitem__(
+                "collected", calls["collected"] + 1
+            ),
+            GetFormattedCounterArray=array,
+            CloseQuery=lambda _query: calls.__setitem__("closed", calls["closed"] + 1),
+        )
+        with patch.dict(sys.modules, {"win32pdh": fake_pdh}):
+            first = collector._query_windows_processes({3200: "dwm.exe"}, {0: "NVIDIA"})
+            second = collector._query_windows_processes({3200: "dwm.exe"}, {0: "NVIDIA"})
+            collector._release_wmi()
+        self.assertEqual(first.processes[0]["local_memory"], 40)
+        self.assertEqual(first.processes[0]["claimed_memory"], 100)
+        self.assertEqual(first.processes[0]["committed_memory"], 55)
+        self.assertEqual(len(second.processes), 2)
+        self.assertTrue(any(row["pid"] == 42 for row in second.processes))
+        self.assertEqual(second.adapters[0]["dedicated_usage"], 700)
+        self.assertEqual(
+            next(row for row in second.processes if row["pid"] == 3200)["gpu_percent"],
+            0.5,
+        )
+        self.assertEqual(calls, {"opened": 1, "added": 8, "collected": 2, "closed": 1})
+
     def test_engine_rates_use_only_matched_nvidia_luid(self):
         collector = GPUMonitor.__new__(GPUMonitor)
         nvidia = "0X00000000_0X000196BD"
