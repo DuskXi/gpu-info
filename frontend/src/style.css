@@ -135,11 +135,36 @@ tbody tr:hover { background: var(--panel-hover); }
 .trend-topline { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin: 0 0 32px; }
 .trend-topline .eyebrow { margin-bottom: 10px; }
 .trend-topline h2 { margin: 0; font-size: clamp(32px, 3vw, 46px); font-weight: 600; letter-spacing: -.06em; }
-.target-control { display: flex; flex-direction: column; gap: 8px; min-width: min(320px, 100%); }
+.target-control { display: flex; flex-direction: column; gap: 8px; width: min(400px, 100%); min-width: min(320px, 100%); }
 .target-control label { color: var(--muted); font-size: 11px; }
 .target-control select, .target-control input { max-width: 400px; }
 .target-control input { height: 42px; padding: 0 14px; background: var(--panel); border: 1px solid var(--line); color: var(--text); outline: none; }
 .target-control input:focus { border-color: var(--accent); }
+.process-picker { position: relative; width: 100%; }
+.process-picker > label { display: block; margin-bottom: 8px; }
+.process-picker > input { display: block; width: 100%; margin-bottom: 7px; }
+.process-picker-trigger { width: 100%; min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 14px; background: var(--panel); border: 1px solid var(--line); color: var(--text); text-align: left; }
+.process-picker-trigger:hover, .process-picker-trigger:focus-visible { border-color: var(--accent); }
+.process-picker-trigger span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.process-picker-trigger span:last-child { color: var(--accent); }
+.process-picker-panel { position: absolute; top: calc(100% + 7px); right: 0; z-index: 30; width: min(820px, calc(100vw - 48px)); background: var(--panel); border: 1px solid var(--line); box-shadow: 0 18px 42px rgb(18 45 59 / 13%); }
+.process-picker-sort, .process-option { display: grid; grid-template-columns: minmax(175px, 1.8fr) repeat(4, minmax(90px, 1fr)); align-items: center; gap: 12px; }
+.process-picker-sort { padding: 11px 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
+.process-picker-sort button { padding: 6px 0; background: transparent; border: 0; color: var(--muted); text-align: right; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.process-picker-sort button:first-child { text-align: left; }
+.process-picker-sort button:hover, .process-picker-sort button.active { color: var(--accent); }
+.process-picker-sort button span { padding-left: 3px; }
+.process-picker-list { max-height: min(560px, 55vh); overflow-y: auto; overscroll-behavior: contain; }
+.process-option { width: 100%; min-height: 57px; padding: 8px 16px; background: transparent; border: 0; border-bottom: 1px solid var(--line-soft); color: var(--text); text-align: right; font: 12px "DM Mono", monospace; }
+.process-option:last-child { border-bottom: 0; }
+.process-option:hover, .process-option:focus-visible { background: var(--panel-hover); outline: none; }
+.process-option[aria-selected="true"] { box-shadow: inset 3px 0 var(--accent); }
+.process-option-name { min-width: 0; display: flex; flex-direction: column; gap: 2px; text-align: left; }
+.process-option-name strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 13px Manrope, "Noto Sans SC", sans-serif; }
+.process-option-name small { color: var(--soft); font: 11px "DM Mono", monospace; }
+.process-option > span:not(:first-child) { white-space: nowrap; }
+.process-picker-empty { padding: 32px 16px; color: var(--muted); font-size: 12px; text-align: center; }
+.process-picker-note { margin: 0; padding: 10px 16px; border-top: 1px solid var(--line); color: var(--soft); font-size: 10px; line-height: 1.5; }
 .chart-frame { height: clamp(320px, 37vw, 520px); padding: 22px 24px 12px; background: var(--panel); border: 1px solid var(--line); }
 .trend-empty { min-height: 320px; }
 .trend-side { grid-column: 2; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 20px; min-width: 0; }
@@ -205,6 +230,15 @@ tbody tr:hover { background: var(--panel-hover); }
   .table-toolbar input { width: 100%; }
   .table-toolbar > span { display: none; }
   .trend-topline { flex-direction: column; align-items: stretch; }
+  .target-control { width: 100%; }
+  .process-picker-panel { width: 100%; }
+  .process-picker-sort, .process-option { grid-template-columns: minmax(0, 1fr) repeat(4, auto); gap: 8px; }
+  .process-picker-sort { overflow-x: auto; }
+  .process-picker-sort button { font-size: 10px; }
+  .process-option { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px 10px; text-align: left; }
+  .process-option-name { grid-column: 1 / -1; }
+  .process-option > span:not(:first-child) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .process-option > span:not(:first-child)::before { display: block; content: attr(data-label); margin-bottom: 3px; color: var(--soft); font: 9px Manrope, "Noto Sans SC", sans-serif; }
   .chart-frame { margin: 0 -20px; height: 330px; padding: 14px 8px; }
   .site-footer { flex-direction: column; padding: 20px; }
 }

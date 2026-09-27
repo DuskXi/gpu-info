@@ -7,6 +7,7 @@ import {
 } from 'chart.js'
 import { useMonitorData, procKey } from '../composables/useMonitorData'
 import { number, percent } from '../format'
+import ProcessPicker from '../components/ProcessPicker.vue'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
 
@@ -14,7 +15,7 @@ const { snapshot, history } = useMonitorData()
 const mode = ref('gpu')
 const selectedGpu = ref('all')
 const selectedProcess = ref('')
-const processSearch = ref('')
+const processManuallySelected = ref(false)
 const gpuMetric = ref('vram')
 const processMetric = ref('used_memory')
 
@@ -43,26 +44,31 @@ const gpus = computed(() => snapshot.value?.gpus ?? [])
 const processOptions = computed(() => {
   const options = new Map()
   for (const p of snapshot.value?.processes ?? []) {
-    options.set(procKey(p.pid, p.gpu_id), p)
+    options.set(procKey(p.pid, p.gpu_id), { ...p })
   }
   for (const p of snapshot.value?.process_utilization ?? []) {
     const key = procKey(p.pid, p.gpu_id)
-    if (!options.has(key)) options.set(key, p)
+    const existing = options.get(key)
+    options.set(key, {
+      ...p,
+      ...existing,
+      sm_util: p.sm_util,
+      gpu_percent: existing?.gpu_percent ?? p.gpu_percent ?? p.sm_util,
+    })
   }
   return [...options.entries()].map(([key, p]) => ({ key, ...p }))
 })
-const filteredProcessOptions = computed(() => {
-  const query = processSearch.value.trim().toLowerCase()
-  return query
-    ? processOptions.value.filter(p => p.name.toLowerCase().includes(query) || String(p.pid).includes(query))
-    : processOptions.value
-})
-watch(filteredProcessOptions, options => {
-  if (!options.some(option => option.key === selectedProcess.value)) {
-    selectedProcess.value = options[0]?.key || ''
+watch(processOptions, options => {
+  const current = options.find(option => option.key === selectedProcess.value)
+  if (!current) processManuallySelected.value = false
+  if (!current || (!processManuallySelected.value && current.used_memory == null)) {
+    const withMemory = options
+      .filter(option => Number.isFinite(option.used_memory))
+      .sort((a, b) => b.used_memory - a.used_memory)[0]
+    selectedProcess.value = (withMemory || current || options[0])?.key || ''
   }
 }, { immediate: true })
-const processKey = computed(() => selectedProcess.value || filteredProcessOptions.value[0]?.key || '')
+const processKey = computed(() => selectedProcess.value || processOptions.value[0]?.key || '')
 const selectedProcessInfo = computed(() => processOptions.value.find(p => p.key === processKey.value))
 const palette = ['#007c96', '#425ec4', '#b36116', '#7953aa', '#b34e66']
 
@@ -140,6 +146,10 @@ function chooseMetric(key) {
   if (mode.value === 'gpu') gpuMetric.value = key
   else processMetric.value = key
 }
+function chooseProcess(key) {
+  selectedProcess.value = key
+  processManuallySelected.value = true
+}
 </script>
 
 <template>
@@ -177,17 +187,13 @@ function chooseMetric(key) {
             <h2>{{ activeMetric?.label }}</h2>
           </div>
           <div class="target-control">
-            <label :for="mode === 'gpu' ? 'gpu-select' : 'process-select'">观察对象</label>
+            <label v-if="mode === 'gpu'" for="gpu-select">观察对象</label>
             <select v-if="mode === 'gpu'" id="gpu-select" v-model="selectedGpu">
               <option value="all">对比全部 GPU</option>
               <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }} · {{ gpu.name }}</option>
             </select>
-            <template v-else>
-              <input v-model="processSearch" type="search" placeholder="搜索进程名或 PID" aria-label="搜索观察进程" />
-              <select id="process-select" v-model="selectedProcess">
-                <option v-for="proc in filteredProcessOptions" :key="proc.key" :value="proc.key">{{ proc.name }} · {{ proc.pid }} / GPU {{ proc.gpu_id }}</option>
-              </select>
-            </template>
+            <ProcessPicker v-else :processes="processOptions" :selected-key="selectedProcess"
+              @select="chooseProcess" />
           </div>
         </div>
 

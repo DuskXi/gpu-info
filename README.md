@@ -56,6 +56,8 @@ pnpm dev
 - Windows WDDM 下，NVML 的进程显存通常不可用。程序用无上下文的 CUDA Driver 设备 LUID 查询，将 Windows GPU 进程计数器精确关联到 NVML 所列 NVIDIA 设备；未匹配的核显计数器不计入。其他系统使用 NVML 的计算和图形进程列表，同一 GPU / PID 重复出现时取较大值。
 - Windows 进程值是系统性能计数器的专用分配量，与 NVML 的设备驻留总量口径不同。部分 Windows 版本的该计数器还可能报告偏高，因此不能将进程值相加与设备总量比较。
 - GPU 设备指标约每秒采样，Windows 进程计数器在独立工作线程中异步刷新，查询间隔至少两秒；`processes_sampled_at` 标明最近一次进程采样时间。
+- 趋势页的进程选择器可以按进程名或 PID 搜索，并按专用显存、CPU、磁盘 I/O、GPU 占用排序。进程 CPU 是进程 CPU 时间增量除以逻辑处理器数后的整机百分比；磁盘 I/O 是进程实际读取与写入字节数的每秒速率，首次采样显示缺失值。
+- Windows 进程 GPU 占用取对应 NVIDIA 设备最忙引擎的性能计数器值；不可用时采用 NVML 的进程 SM 负载。缺失值显示为 `—`，不会当作 0 排序。
 - 不把 Windows 共享 GPU 内存或核显显存并入 NVIDIA 专用显存。进程合计不一定等于设备总占用。
 - 监视器不调用 CUDA Runtime 的 `cudaSetDevice` / `cudaMemGetInfo`。Windows 的 CUDA Driver 查询只读取设备标识，不创建 CUDA 上下文。
 - 不可用的可选计数器返回 `null`，趋势图将其显示为缺口。

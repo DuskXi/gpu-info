@@ -4,12 +4,13 @@ CUDA Driver device identity queries never create a CUDA context.
 """
 
 import logging
+import math
 import os
 import re
 import struct
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any, Callable, NamedTuple
 
 import psutil
 
@@ -28,13 +29,19 @@ def _pci_key(value: str | bytes) -> tuple[int, int, int, int] | None:
 
 
 def _counter_identity(name: str) -> tuple[int, str] | None:
-    parts = name.upper().split("_")
-    try:
-        pid = int(parts[parts.index("PID") + 1])
-        offset = parts.index("LUID") + 1
-        return pid, f"{parts[offset]}_{parts[offset + 1]}"
-    except (ValueError, IndexError):
+    match = re.search(
+        r"pid_(\d+)_luid_(0x[0-9a-f]+)_(0x[0-9a-f]+)", name, re.IGNORECASE
+    )
+    if match is None:
         return None
+    return int(match.group(1)), f"{match.group(2)}_{match.group(3)}".upper()
+
+
+class _ProcessSample(NamedTuple):
+    created_at: float
+    sampled_at: float
+    cpu_seconds: float
+    io_bytes: int | None
 
 
 class GPUMonitor:
@@ -56,6 +63,8 @@ class GPUMonitor:
         self._wmi_processes: list[dict[str, Any]] = []
         self._wmi_requested_at = 0.0
         self._wmi_sampled_at: float | None = None
+        self._process_samples: dict[int, _ProcessSample] = {}
+        self._logical_cpus = max(1, psutil.cpu_count() or 1)
         try:
             import pynvml
             pynvml.nvmlInit()
@@ -196,8 +205,59 @@ class GPUMonitor:
                 result["errors"].append(f"GPU {index}: {exc}")
         if os.name == "nt":
             self._update_windows_processes(result)
+        self._sample_process_activity(result)
         result["processes"].sort(key=lambda p: p["used_memory"], reverse=True)
         return result
+
+    def _sample_process_activity(self, result: dict[str, Any]) -> None:
+        """Attach process CPU share and read+write I/O rates to this frame."""
+        previous = self._process_samples
+        current: dict[int, _ProcessSample] = {}
+        activity: dict[int, tuple[float | None, float | None]] = {}
+        rows = result["processes"] + result["process_utilization"]
+        for pid in {row["pid"] for row in rows}:
+            try:
+                process = psutil.Process(pid)
+                with process.oneshot():
+                    created_at = process.create_time()
+                    cpu_times = process.cpu_times()
+                    cpu_seconds = cpu_times.user + cpu_times.system
+                    io = self._read(process.io_counters)
+                    io_bytes = int(io.read_bytes + io.write_bytes) if io is not None else None
+                sample = _ProcessSample(
+                    created_at, time.monotonic(), cpu_seconds, io_bytes
+                )
+            except (psutil.Error, ValueError):
+                activity[pid] = (None, None)
+                continue
+            current[pid] = sample
+            before = previous.get(pid)
+            cpu_percent = None
+            disk_bytes_per_sec = None
+            if before is not None and before.created_at == created_at:
+                elapsed = sample.sampled_at - before.sampled_at
+                if elapsed > 0:
+                    cpu_percent = min(100.0, max(
+                        0.0, (cpu_seconds - before.cpu_seconds)
+                        / elapsed / self._logical_cpus * 100
+                    ))
+                    if io_bytes is not None and before.io_bytes is not None:
+                        disk_bytes_per_sec = max(
+                            0.0, (io_bytes - before.io_bytes) / elapsed
+                        )
+            activity[pid] = (cpu_percent, disk_bytes_per_sec)
+        self._process_samples = current
+
+        nvml_usage = {
+            (row["gpu_id"], row["pid"]): row.get("sm_util")
+            for row in result["process_utilization"]
+        }
+        for row in rows:
+            row["cpu_percent"], row["disk_bytes_per_sec"] = activity.get(
+                row["pid"], (None, None)
+            )
+            if row.get("gpu_percent") is None:
+                row["gpu_percent"] = nvml_usage.get((row["gpu_id"], row["pid"]))
 
     def _cuda_luid_map(self) -> dict[str, int]:
         """Match CUDA Driver LUIDs to NVML PCI IDs without creating a context."""
@@ -265,6 +325,8 @@ class GPUMonitor:
                 self._wmi_error = None
             except Exception as exc:
                 self._wmi_error = f"Windows GPU process counters unavailable: {exc}"
+                self._wmi_processes = []
+                self._wmi_sampled_at = None
             self._wmi_future = None
             collected_this_tick = True
         if (
@@ -286,6 +348,7 @@ class GPUMonitor:
                 existing[key]["used_memory"] = max(existing[key]["used_memory"], process["used_memory"])
                 existing[key]["shared_memory"] = process["shared_memory"]
                 existing[key]["memory_source"] = process["memory_source"]
+                existing[key]["gpu_percent"] = process["gpu_percent"]
             else:
                 result["processes"].append(dict(process))
         result["processes_sampled_at"] = self._wmi_sampled_at
@@ -308,6 +371,7 @@ class GPUMonitor:
         grouped: dict[tuple[int, int], dict[str, Any]] = {}
         luid_map = self._luid_by_gpu
         assert luid_map is not None
+        engine_load = self._read_engine_load(luid_map)
         for counter in counters:
             identity = _counter_identity(counter.Name)
             if identity is None:
@@ -328,10 +392,67 @@ class GPUMonitor:
                     "gpu_name": gpu_names.get(gpu_id, f"GPU {gpu_id}"),
                     "used_memory": 0, "shared_memory": 0,
                     "memory_source": "Windows GPU counters",
+                    "gpu_percent": engine_load.get(key),
                 }
             grouped[key]["used_memory"] += dedicated
             grouped[key]["shared_memory"] += shared
         return [process for process in grouped.values() if process["used_memory"] > 0]
+
+    def _read_engine_load(self, luid_map: dict[str, int]) -> dict[tuple[int, int], float]:
+        """Batch-sample PDH engine rates without per-instance WMI COM reads."""
+        try:
+            import win32pdh
+
+            query = win32pdh.OpenQuery()
+        except Exception as exc:
+            logger.debug("GPU Engine counters unavailable: %s", exc)
+            return {}
+        handles: list[tuple[Any, tuple[int, int]]] = []
+        try:
+            for luid in luid_map:
+                path = (
+                    r"\GPU Engine(pid_*_luid_" + luid.lower()
+                    + r"_*)\Utilization Percentage"
+                )
+                for expanded in self._read(
+                    lambda: win32pdh.ExpandCounterPath(path), []
+                ):
+                    identity = _counter_identity(expanded)
+                    if identity is None:
+                        continue
+                    pid, actual_luid = identity
+                    gpu_id = luid_map.get(actual_luid)
+                    if gpu_id is None:
+                        continue
+                    handle = self._read(lambda: win32pdh.AddCounter(query, expanded))
+                    if handle is not None:
+                        handles.append((handle, (gpu_id, pid)))
+            if not handles:
+                return {}
+            win32pdh.CollectQueryData(query)
+            time.sleep(0.5)
+            win32pdh.CollectQueryData(query)
+            engine_load: dict[tuple[int, int], float] = {}
+            for handle, key in handles:
+                reading = self._read(
+                    lambda: win32pdh.GetFormattedCounterValue(
+                        handle, win32pdh.PDH_FMT_DOUBLE
+                    )
+                )
+                if reading is None:
+                    continue
+                usage = reading[1]
+                if not isinstance(usage, (float, int)) or not math.isfinite(usage):
+                    continue
+                engine_load[key] = max(
+                    engine_load.get(key, 0.0), min(100.0, max(0.0, float(usage)))
+                )
+            return engine_load
+        except Exception as exc:
+            logger.debug("GPU Engine counter sampling failed: %s", exc)
+            return {}
+        finally:
+            self._read(lambda: win32pdh.CloseQuery(query))
 
     def _release_wmi(self) -> None:
         if self._wmi_initialized:

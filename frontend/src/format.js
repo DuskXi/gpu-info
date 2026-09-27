@@ -13,6 +13,14 @@ export function percent(value) {
   return number(value, 0, '%')
 }
 
+export function throughput(value) {
+  if (value == null || !Number.isFinite(value)) return '—'
+  if (value < 1024) return `${Math.round(value)} B/s`
+  if (value < 1048576) return `${(value / 1024).toFixed(1)} KB/s`
+  if (value < 1073741824) return `${(value / 1048576).toFixed(1)} MB/s`
+  return `${(value / 1073741824).toFixed(1)} GB/s`
+}
+
 export function time(timestamp) {
   return timestamp ? new Date(timestamp * 1000).toLocaleTimeString() : '—'
 }
