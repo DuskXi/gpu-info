@@ -23,7 +23,7 @@ const status = computed(() => !isConnected.value ? '连接中断' : isStale.valu
       <div class="connection" :class="{ offline: !isConnected || isStale }" role="status">
         <span class="status-dot"></span>
         <span>{{ status }}</span>
-        <time class="update-time">{{ time(snapshot?.timestamp) }}</time>
+        <time class="update-time"><RollingValue :value="time(snapshot?.timestamp)" :amount="snapshot?.timestamp" /></time>
       </div>
     </header>
     <main class="main-content"><router-view /></main>

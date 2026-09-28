@@ -87,7 +87,7 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutside))
     <button type="button" class="process-picker-trigger" aria-haspopup="listbox" :aria-expanded="open"
       aria-controls="process-picker-list" @click="open ? open = false : showList(true)"
       @keydown.down.prevent="showList(true)">
-      <span>{{ selected ? `${selected.name} · ${selected.pid} / GPU ${selected.gpu_id}` : '选择进程' }}</span>
+      <span><RollingValue :value="selected ? `${selected.name} · ${selected.pid} / GPU ${selected.gpu_id}` : '选择进程'" /></span>
       <span aria-hidden="true">{{ open ? '⌃' : '⌄' }}</span>
     </button>
     <div v-if="open" class="process-picker-panel">
@@ -104,11 +104,11 @@ onUnmounted(() => document.removeEventListener('pointerdown', handleOutside))
           class="process-option" :aria-selected="process.key === selectedKey"
           :aria-label="`${process.name}，PID ${process.pid}，本地用量 ${bytes(process.used_memory)}，CPU ${activityPercent(process.cpu_percent)}，磁盘 I/O ${throughput(process.disk_bytes_per_sec)}，GPU ${activityPercent(process.gpu_percent)}`"
           @click="choose(process)">
-          <span class="process-option-name"><strong>{{ process.name }}</strong><small>PID {{ process.pid }} · GPU {{ process.gpu_id }}</small></span>
-          <span data-label="本地用量">{{ bytes(process.used_memory) }}</span>
-          <span data-label="CPU">{{ activityPercent(process.cpu_percent) }}</span>
-          <span data-label="磁盘">{{ throughput(process.disk_bytes_per_sec) }}</span>
-          <span data-label="GPU">{{ activityPercent(process.gpu_percent) }}</span>
+          <span class="process-option-name"><strong>{{ process.name }}</strong><small>PID <RollingValue :value="process.pid" /> · GPU <RollingValue :value="process.gpu_id" /></small></span>
+          <span data-label="本地用量"><RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
+          <span data-label="CPU"><RollingValue :value="activityPercent(process.cpu_percent)" :amount="process.cpu_percent" /></span>
+          <span data-label="磁盘"><RollingValue :value="throughput(process.disk_bytes_per_sec)" :amount="process.disk_bytes_per_sec" /></span>
+          <span data-label="GPU"><RollingValue :value="activityPercent(process.gpu_percent)" :amount="process.gpu_percent" /></span>
         </button>
         <div v-if="!rows.length" class="process-picker-empty">没有匹配的进程</div>
       </div>

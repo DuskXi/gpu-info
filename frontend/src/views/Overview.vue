@@ -156,7 +156,7 @@ function displayLabel(display) {
         <h1>GPU 状态<span class="title-period">.</span></h1>
         <p class="intro-note">直接查看设备负载、专用显存和占用进程。</p>
       </div>
-      <div class="intro-count"><strong>{{ gpus.length }}</strong><span>NVIDIA GPU</span></div>
+      <div class="intro-count"><strong><RollingValue :value="gpus.length" /></strong><span>NVIDIA GPU</span></div>
     </section>
 
     <div v-if="!snapshot" class="empty-state">正在等待第一帧硬件数据…</div>
@@ -166,20 +166,20 @@ function displayLabel(display) {
       <section class="system-strip" aria-label="系统指标">
         <div class="strip-cell">
           <span class="label">CPU 占用</span>
-          <strong>{{ percent(system?.cpu_percent) }}</strong>
+          <strong><RollingValue :value="percent(system?.cpu_percent)" :amount="system?.cpu_percent" /></strong>
         </div>
         <div class="strip-cell">
           <span class="label">系统内存</span>
-          <strong>{{ percent(system?.memory?.percent) }}</strong>
-          <small>{{ bytes(system?.memory?.used) }} / {{ bytes(system?.memory?.total) }}</small>
+          <strong><RollingValue :value="percent(system?.memory?.percent)" :amount="system?.memory?.percent" /></strong>
+          <small><RollingValue :value="bytes(system?.memory?.used)" :amount="system?.memory?.used" /> / <RollingValue :value="bytes(system?.memory?.total)" :amount="system?.memory?.total" /></small>
         </div>
         <div class="strip-cell">
           <span class="label">设备总显存</span>
-          <strong>{{ bytes(gpus.reduce((sum, gpu) => sum + (gpu.memory?.total || 0), 0)) }}</strong>
+          <strong><RollingValue :value="bytes(gpus.reduce((sum, gpu) => sum + (gpu.memory?.total || 0), 0))" :amount="gpus.reduce((sum, gpu) => sum + (gpu.memory?.total || 0), 0)" /></strong>
         </div>
         <div class="strip-cell">
           <span class="label">占用进程</span>
-          <strong>{{ processes.length }}</strong>
+          <strong><RollingValue :value="processes.length" /></strong>
         </div>
       </section>
 
@@ -193,16 +193,16 @@ function displayLabel(display) {
         <div v-else class="gpu-grid">
           <article v-for="gpu in gpus" :key="gpu.id" class="gpu-card">
             <div class="gpu-card-head">
-              <span class="gpu-index">GPU {{ String(gpu.id).padStart(2, '0') }}</span>
+              <span class="gpu-index">GPU <RollingValue :value="String(gpu.id).padStart(2, '0')" :amount="gpu.id" /></span>
               <span class="gpu-source">NVML</span>
             </div>
             <h3>{{ gpu.name }}</h3>
             <div class="hero-stat">
-              <div><span class="label">专用显存已用</span><strong>{{ bytes(gpu.memory?.used) }}</strong></div>
-              <span>{{ bytes(gpu.memory?.total) }} 总量</span>
+              <div><span class="label">专用显存已用</span><strong><RollingValue :value="bytes(gpu.memory?.used)" :amount="gpu.memory?.used" /></strong></div>
+              <span><RollingValue :value="bytes(gpu.memory?.total)" :amount="gpu.memory?.total" /> 总量</span>
             </div>
             <div class="vram-bars">
-              <div class="vram-bar-heading"><span>整卡显存 <small>NVML</small></span><span>已用 {{ bytes(gpu.memory?.used) }} · 可用 {{ bytes(deviceFree(gpu)) }}</span></div>
+              <div class="vram-bar-heading"><span>整卡显存 <small>NVML</small></span><span>已用 <RollingValue :value="bytes(gpu.memory?.used)" :amount="gpu.memory?.used" /> · 可用 <RollingValue :value="bytes(deviceFree(gpu))" :amount="deviceFree(gpu)" /></span></div>
               <div class="meter device-meter" role="group" :aria-label="`GPU ${gpu.id} 整卡显存；已用 ${bytes(gpu.memory?.used)}，可用 ${bytes(deviceFree(gpu))}`">
                 <button v-if="devicePercent(gpu) > 0" type="button" class="device-used"
                   :style="{ width: `${devicePercent(gpu)}%` }" :aria-label="`整卡已用 ${bytes(gpu.memory?.used)}`"
@@ -214,7 +214,7 @@ function displayLabel(display) {
                   @focus="openDeviceTooltip($event, gpu, 'free')" @blur="closeTooltip(`${gpu.id}:device:free`)"></button>
               </div>
               <template v-if="processCompositions.get(gpu.id)?.slices.length">
-                <div class="vram-bar-heading"><span>进程读数构成 <small>可重复计入</small></span><span>Σ {{ bytes(processCompositions.get(gpu.id).total) }}</span></div>
+                <div class="vram-bar-heading"><span>进程读数构成 <small>可重复计入</small></span><span>Σ <RollingValue :value="bytes(processCompositions.get(gpu.id).total)" :amount="processCompositions.get(gpu.id).total" /></span></div>
                 <div class="meter process-meter" role="group" :aria-label="`GPU ${gpu.id} 进程显存读数构成；合计 ${bytes(processCompositions.get(gpu.id).total)}`">
                   <button v-for="slice in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button"
                     :style="{ width: `${slice.percent}%`, background: slice.color }"
@@ -242,31 +242,31 @@ function displayLabel(display) {
                     :style="{ background: processPieGradient(processCompositions.get(gpu.id).zoom.slices) }"
                     @pointermove="onPieMove($event, processCompositions.get(gpu.id).zoom.slices, gpu.id, 'zoom')"
                     @pointerleave="closeTooltipGroup(`${gpu.id}:pie:zoom:`)"></div>
-                  <figcaption>其余进程放大<small>不含 {{ processCompositions.get(gpu.id).zoom.excluded }}</small></figcaption>
+                  <figcaption>其余进程放大<small>不含 <RollingValue :value="processCompositions.get(gpu.id).zoom.excluded" /></small></figcaption>
                 </figure>
               </div>
               <div class="vram-legend">
-                <span class="label">进程 VRAM 分布 <small>GPU {{ gpu.id }} · {{ time(snapshot?.processes_sampled_at) }}</small></span>
+                <span class="label">进程 VRAM 分布 <small>GPU <RollingValue :value="gpu.id" /> · <RollingValue :value="time(snapshot?.processes_sampled_at)" :amount="snapshot?.processes_sampled_at" /></small></span>
                 <button v-for="slice in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button" class="vram-legend-row"
                   @pointerenter="openProcessTooltip($event, `${gpu.id}:legend:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
                   @pointerleave="closeTooltip(`${gpu.id}:legend:${slice.pid ?? 'other'}`)"
                   @focus="openProcessTooltip($event, `${gpu.id}:legend:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
                   @blur="closeTooltip(`${gpu.id}:legend:${slice.pid ?? 'other'}`)">
                   <i :style="{ background: slice.color }"></i>
-                  <span :title="slice.pid == null ? slice.name : `${slice.name} · PID ${slice.pid}`">{{ slice.name }}<small v-if="slice.pid != null"> · {{ slice.pid }}</small></span>
-                  <strong>{{ bytes(slice.value) }}</strong>
+                  <span :title="slice.pid == null ? slice.name : `${slice.name} · PID ${slice.pid}`"><RollingValue :value="slice.name" /><small v-if="slice.pid != null"> · <RollingValue :value="slice.pid" /></small></span>
+                  <strong><RollingValue :value="bytes(slice.value)" :amount="slice.value" /></strong>
                 </button>
-                <p>进程读数合计 {{ bytes(processCompositions.get(gpu.id).total) }}；NVML 整卡已用 {{ bytes(processCompositions.get(gpu.id).deviceUsed) }}。{{ processCompositions.get(gpu.id).zoom ? '右图只比较排除最大进程后的剩余读数。' : '' }}共享资源可能重复计入。</p>
+                <p>进程读数合计 <RollingValue :value="bytes(processCompositions.get(gpu.id).total)" :amount="processCompositions.get(gpu.id).total" />；NVML 整卡已用 <RollingValue :value="bytes(processCompositions.get(gpu.id).deviceUsed)" :amount="processCompositions.get(gpu.id).deviceUsed" />。{{ processCompositions.get(gpu.id).zoom ? '右图只比较排除最大进程后的剩余读数。' : '' }}共享资源可能重复计入。</p>
               </div>
             </div>
             <p v-else class="vram-composition-empty">暂无可用的进程显存读数</p>
             <div class="gpu-metrics">
-              <div><span>GPU 负载</span><strong>{{ percent(gpu.utilization?.gpu) }}</strong></div>
-              <div><span>显存控制器</span><strong>{{ percent(gpu.utilization?.memory) }}</strong></div>
-              <div><span>温度</span><strong>{{ number(gpu.temperature, 0, '°C') }}</strong></div>
-              <div><span>功耗</span><strong>{{ number(gpu.power?.usage, 0, ' W') }}</strong></div>
-              <div><span>核心频率</span><strong>{{ number(gpu.clocks?.graphics, 0, ' MHz') }}</strong></div>
-              <div><span>显存频率</span><strong>{{ number(gpu.clocks?.memory, 0, ' MHz') }}</strong></div>
+              <div><span>GPU 负载</span><strong><RollingValue :value="percent(gpu.utilization?.gpu)" :amount="gpu.utilization?.gpu" /></strong></div>
+              <div><span>显存控制器</span><strong><RollingValue :value="percent(gpu.utilization?.memory)" :amount="gpu.utilization?.memory" /></strong></div>
+              <div><span>温度</span><strong><RollingValue :value="number(gpu.temperature, 0, '°C')" :amount="gpu.temperature" /></strong></div>
+              <div><span>功耗</span><strong><RollingValue :value="number(gpu.power?.usage, 0, ' W')" :amount="gpu.power?.usage" /></strong></div>
+              <div><span>核心频率</span><strong><RollingValue :value="number(gpu.clocks?.graphics, 0, ' MHz')" :amount="gpu.clocks?.graphics" /></strong></div>
+              <div><span>显存频率</span><strong><RollingValue :value="number(gpu.clocks?.memory, 0, ' MHz')" :amount="gpu.clocks?.memory" /></strong></div>
             </div>
             <details class="device-details">
               <summary>设备信息</summary>
@@ -275,28 +275,28 @@ function displayLabel(display) {
                 <div><dt>计算能力</dt><dd>{{ gpu.device_info?.compute_capability || '—' }}</dd></div>
                 <div><dt>VBIOS</dt><dd>{{ gpu.device_info?.vbios || '—' }}</dd></div>
                 <div><dt>UUID</dt><dd>{{ gpu.device_info?.uuid || '—' }}</dd></div>
-                <div><dt>BAR1 已用</dt><dd>{{ bytes(gpu.bar1?.used) }}</dd></div>
+                <div><dt>BAR1 已用</dt><dd><RollingValue :value="bytes(gpu.bar1?.used)" :amount="gpu.bar1?.used" /></dd></div>
                 <div><dt>性能状态</dt><dd>{{ gpu.performance_state || '—' }}</dd></div>
               </dl>
             </details>
           </article>
         </div>
         <div v-if="displayState" class="display-panel">
-          <div class="display-panel-head"><span class="label">当前显示配置</span><small>{{ displayState.count }} 个活动显示器 · 每 5 秒检查变化</small></div>
+          <div class="display-panel-head"><span class="label">当前显示配置</span><small><RollingValue :value="displayState.count" /> 个活动显示器 · 每 5 秒检查变化</small></div>
           <div v-if="!displayState.displays?.length" class="display-empty">当前没有活动显示路径</div>
           <div v-for="display in displayState.displays" :key="display.id" class="display-row">
             <strong>{{ display.name }}</strong>
-            <span>{{ displayLabel(display) }}</span>
+            <span><RollingValue :value="displayLabel(display)" /></span>
           </div>
           <details v-if="displayEvents.length" class="display-log">
-            <summary>显示状态记录 <span>{{ displayEvents.length }} 条最近事件</span></summary>
+            <summary>显示状态记录 <span><RollingValue :value="displayEvents.length" /> 条最近事件</span></summary>
             <ol>
               <li v-for="event in displayEvents" :key="`${event.timestamp}:${event.kind}`">
-                <time>{{ time(event.timestamp) }}</time>
+                <time><RollingValue :value="time(event.timestamp)" :amount="event.timestamp" /></time>
                 <span>{{ event.kind === 'baseline' ? '启动基线' : '配置变化' }}</span>
-                <strong>{{ event.previous && event.previous.count !== event.current.count ? `${event.previous.count} → ` : '' }}{{ event.current.count }} 屏</strong>
-                <small>{{ event.current.displays.map(displayLabel).join(' / ') || '无活动显示器' }}</small>
-                <small v-if="event.gpu_memory?.length">当时整卡已用 {{ event.gpu_memory.map(item => `GPU ${item.gpu_id} ${bytes(item.used)}`).join(' · ') }}</small>
+                <strong><template v-if="event.previous && event.previous.count !== event.current.count"><RollingValue :value="event.previous.count" /> → </template><RollingValue :value="event.current.count" /> 屏</strong>
+                <small><RollingValue :value="event.current.displays.map(displayLabel).join(' / ') || '无活动显示器'" /></small>
+                <small v-if="event.gpu_memory?.length">当时整卡已用 <RollingValue :value="event.gpu_memory.map(item => `GPU ${item.gpu_id} ${bytes(item.used)}`).join(' · ')" /></small>
               </li>
             </ol>
           </details>
@@ -306,19 +306,19 @@ function displayLabel(display) {
       <section class="section-block process-section" aria-labelledby="process-heading">
         <div class="section-heading">
           <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">进程显存</h2></div>
-          <span class="section-aside">进程采样 {{ time(snapshot?.processes_sampled_at) }} · GPU / PID 去重</span>
+          <span class="section-aside">进程采样 <RollingValue :value="time(snapshot?.processes_sampled_at)" :amount="snapshot?.processes_sampled_at" /> · GPU / PID 去重</span>
         </div>
         <details v-for="account in accounting" :key="account.gpuId" class="accounting-disclosure">
           <summary>
-            <span>GPU {{ account.gpuId }} · 显存口径核对</span>
-            <strong>设备已用 {{ bytes(account.nvmlUsed) }} <span class="accounting-summary-source">NVML</span></strong>
+            <span>GPU <RollingValue :value="account.gpuId" /> · 显存口径核对</span>
+            <strong>设备已用 <RollingValue :value="bytes(account.nvmlUsed)" :amount="account.nvmlUsed" /> <span class="accounting-summary-source">NVML</span></strong>
           </summary>
           <div class="accounting-content">
             <div class="accounting-values">
-              <div><span>NVML 设备已用</span><strong>{{ bytes(account.nvmlUsed) }}</strong></div>
-              <div><span>Windows 设备专用使用</span><strong>{{ bytes(account.adapterUsed) }}</strong></div>
-              <div><span>Σ {{ account.localCount }} 个进程本地用量 · 含重复</span><strong>{{ bytes(account.processLocal) }}</strong></div>
-              <div><span>Σ {{ account.processCount }} 个进程专用计数 · 含重复</span><strong>{{ bytes(account.processClaimed) }}</strong></div>
+              <div><span>NVML 设备已用</span><strong><RollingValue :value="bytes(account.nvmlUsed)" :amount="account.nvmlUsed" /></strong></div>
+              <div><span>Windows 设备专用使用</span><strong><RollingValue :value="bytes(account.adapterUsed)" :amount="account.adapterUsed" /></strong></div>
+              <div><span>Σ <RollingValue :value="account.localCount" /> 个进程本地用量 · 含重复</span><strong><RollingValue :value="bytes(account.processLocal)" :amount="account.processLocal" /></strong></div>
+              <div><span>Σ <RollingValue :value="account.processCount" /> 个进程专用计数 · 含重复</span><strong><RollingValue :value="bytes(account.processClaimed)" :amount="account.processClaimed" /></strong></div>
             </div>
             <p>设备已用以 NVML 读数为准。Σ 仅用于排查计数差异，不能当作设备占用或剩余显存。本地用量可包含共享窗口表面；Windows 专用计数还可能异常膨胀。DWM 的独占显存不能从这些计数直接拆出。</p>
             <a href="https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/" target="_blank" rel="noopener noreferrer">微软的计数器说明 ↗</a>
@@ -330,7 +330,7 @@ function displayLabel(display) {
             <option value="all">全部 GPU</option>
             <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
           </select>
-          <span>{{ shownProcesses.length }} 个进程</span>
+          <span><RollingValue :value="shownProcesses.length" /> 个进程</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -344,11 +344,11 @@ function displayLabel(display) {
             <tbody>
               <tr v-for="proc in visibleProcesses" :key="`${proc.gpu_id}:${proc.pid}`">
                 <td class="process-name">{{ proc.name }}</td>
-                <td class="mono">{{ proc.pid }}</td>
-                <td>GPU {{ proc.gpu_id }}</td>
-                <td class="numeric strong">{{ bytes(proc.used_memory) }}</td>
+                <td class="mono"><RollingValue :value="proc.pid" /></td>
+                <td>GPU <RollingValue :value="proc.gpu_id" /></td>
+                <td class="numeric strong"><RollingValue :value="bytes(proc.used_memory)" :amount="proc.used_memory" /></td>
                 <td class="numeric" :class="{ 'counter-over-capacity': counterOverCapacity(proc) }">
-                  {{ bytes(proc.claimed_memory) }}
+                  <RollingValue :value="bytes(proc.claimed_memory)" :amount="proc.claimed_memory" />
                   <small v-if="counterOverCapacity(proc)">超物理容量</small>
                 </td>
               </tr>
@@ -357,19 +357,19 @@ function displayLabel(display) {
           </table>
         </div>
         <button v-if="!query && shownProcesses.length > 20" class="table-more" @click="showAll = !showAll">
-          {{ showAll ? '收起进程列表' : `显示全部 ${shownProcesses.length} 个进程` }} <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
+          <template v-if="showAll">收起进程列表</template><template v-else>显示全部 <RollingValue :value="shownProcesses.length" /> 个进程</template> <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
         </button>
         <p class="data-note">进程本地用量与专用计数均可能包含跨进程共享资源，不能相加。专用计数不是进程独占 VRAM；核显未并入 NVIDIA 列表。</p>
       </section>
       </div>
       <div v-if="tooltipDetail" class="vram-tooltip" role="tooltip" :style="{ left: `${tooltipDetail.left}px`, top: `${tooltipDetail.top}px` }">
-        <div class="vram-tooltip-head"><i :style="{ background: tooltipDetail.color }"></i><strong>{{ tooltipDetail.name }}</strong></div>
-        <small>{{ tooltipDetail.subtitle }}</small>
-        <div class="vram-tooltip-reading"><strong>{{ tooltipDetail.value }}</strong><span>{{ tooltipDetail.share }}</span></div>
+        <div class="vram-tooltip-head"><i :style="{ background: tooltipDetail.color }"></i><strong><RollingValue :value="tooltipDetail.name" /></strong></div>
+        <small><RollingValue :value="tooltipDetail.subtitle" /></small>
+        <div class="vram-tooltip-reading"><strong><RollingValue :value="tooltipDetail.value" /></strong><span><RollingValue :value="tooltipDetail.share" /></span></div>
         <p>{{ tooltipDetail.note }}</p>
         <div v-if="tooltipDetail.members?.length" class="vram-tooltip-members">
-          <div v-for="member in tooltipDetail.members" :key="member.pid"><span>{{ member.name }} · {{ member.pid }}</span><strong>{{ bytes(member.value) }}</strong></div>
-          <small v-if="tooltipDetail.remainingMembers">另有 {{ tooltipDetail.remainingMembers }} 个进程</small>
+          <div v-for="member in tooltipDetail.members" :key="member.pid"><span>{{ member.name }} · <RollingValue :value="member.pid" /></span><strong><RollingValue :value="bytes(member.value)" :amount="member.value" /></strong></div>
+          <small v-if="tooltipDetail.remainingMembers">另有 <RollingValue :value="tooltipDetail.remainingMembers" /> 个进程</small>
         </div>
       </div>
     </template>

@@ -168,7 +168,7 @@ function chooseProcess(key) {
         <h1>趋势分析<span class="title-period">.</span></h1>
         <p class="intro-note">一次观察一个指标。缺失采样保留为空白，不补成零。</p>
       </div>
-      <div class="intro-count"><strong>{{ history.length }}</strong><span>采样点</span></div>
+      <div class="intro-count"><strong><RollingValue :value="history.length" /></strong><span>采样点</span></div>
     </section>
 
     <div class="mode-tabs" role="tablist" aria-label="分析对象">
@@ -219,9 +219,9 @@ function chooseProcess(key) {
           <div class="section-heading"><div><p class="eyebrow">LIVE / SELECTED METRIC</p><h2>当前读数</h2></div></div>
           <div class="reading-grid">
             <div v-for="reading in readings" :key="reading.id" class="reading" :style="{ '--line-color': reading.color }">
-              <span class="reading-name">{{ reading.name }}</span>
-              <strong>{{ display(reading.current) }}</strong>
-              <span class="reading-range">区间 {{ display(reading.min) }} – {{ display(reading.max) }}</span>
+              <span class="reading-name"><RollingValue :value="reading.name" /></span>
+              <strong><RollingValue :value="display(reading.current)" :amount="reading.current" /></strong>
+              <span class="reading-range">区间 <RollingValue :value="display(reading.min)" :amount="reading.min" /> – <RollingValue :value="display(reading.max)" :amount="reading.max" /></span>
             </div>
           </div>
         </section>
@@ -232,9 +232,9 @@ function chooseProcess(key) {
             <article v-for="gpu in gpus" :key="gpu.id">
               <span>GPU {{ gpu.id }} · {{ gpu.name }}</span>
               <div class="snapshot-secondary">
-                <div><span>GPU 负载</span><b>{{ percent(gpu.utilization?.gpu) }}</b></div>
-                <div><span>温度</span><b>{{ number(gpu.temperature, 0, '°C') }}</b></div>
-                <div><span>功耗</span><b>{{ number(gpu.power?.usage, 0, ' W') }}</b></div>
+                <div><span>GPU 负载</span><b><RollingValue :value="percent(gpu.utilization?.gpu)" :amount="gpu.utilization?.gpu" /></b></div>
+                <div><span>温度</span><b><RollingValue :value="number(gpu.temperature, 0, '°C')" :amount="gpu.temperature" /></b></div>
+                <div><span>功耗</span><b><RollingValue :value="number(gpu.power?.usage, 0, ' W')" :amount="gpu.power?.usage" /></b></div>
               </div>
             </article>
           </div>
@@ -243,10 +243,10 @@ function chooseProcess(key) {
         <section v-if="mode === 'process' && selectedProcessInfo" class="detail-summary process-memory-summary" aria-label="进程显存口径">
           <div class="section-heading"><div><p class="eyebrow">MEMORY / ACCOUNTING</p><h2>显存口径</h2></div></div>
           <div class="memory-check-grid">
-            <div><span>{{ selectedProcessInfo.memory_source === 'Windows GPU counters' ? '进程本地用量 · 含共享' : '进程用量 · NVML' }}</span><strong>{{ bytes(selectedProcessInfo.used_memory) }}</strong></div>
-            <div><span>进程专用计数 · Windows</span><strong>{{ bytes(selectedProcessInfo.claimed_memory) }}</strong></div>
-            <div><span>进程提交量 · Windows</span><strong>{{ bytes(selectedProcessInfo.committed_memory) }}</strong></div>
-            <div><span>GPU {{ selectedProcessInfo.gpu_id }} 设备已用 · NVML</span><strong>{{ bytes(selectedProcessGpu?.memory?.used) }}</strong></div>
+            <div><span>{{ selectedProcessInfo.memory_source === 'Windows GPU counters' ? '进程本地用量 · 含共享' : '进程用量 · NVML' }}</span><strong><RollingValue :value="bytes(selectedProcessInfo.used_memory)" :amount="selectedProcessInfo.used_memory" /></strong></div>
+            <div><span>进程专用计数 · Windows</span><strong><RollingValue :value="bytes(selectedProcessInfo.claimed_memory)" :amount="selectedProcessInfo.claimed_memory" /></strong></div>
+            <div><span>进程提交量 · Windows</span><strong><RollingValue :value="bytes(selectedProcessInfo.committed_memory)" :amount="selectedProcessInfo.committed_memory" /></strong></div>
+            <div><span>GPU <RollingValue :value="selectedProcessInfo.gpu_id" /> 设备已用 · NVML</span><strong><RollingValue :value="bytes(selectedProcessGpu?.memory?.used)" :amount="selectedProcessGpu?.memory?.used" /></strong></div>
           </div>
           <p v-if="counterExceedsCapacity" class="memory-counter-alert">专用计数已超过这张 GPU 的物理显存容量，不能解释为该进程实际占用。</p>
           <p class="memory-check-note">进程计数含共享资源，不能相加，也无法仅凭这些读数拆出 DWM 独占量。提交量不是当前驻留量。</p>
