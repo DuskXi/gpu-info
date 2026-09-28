@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, PointElement,
@@ -18,6 +18,40 @@ const selectedProcess = ref('')
 const processManuallySelected = ref(false)
 const gpuMetric = ref('vram')
 const processMetric = ref('used_memory')
+const probeGpu = ref('0')
+const probeBusy = ref(false)
+const probeError = ref('')
+const activityProbe = ref(null)
+const activityMetrics = [
+  { key: 'graphics_vertex', label: '图形 · 顶点 / 几何 warp' },
+  { key: 'graphics_pixel', label: '图形 · 像素 warp' },
+  { key: 'compute_warps', label: '计算 warp' },
+  { key: 'sm_active', label: 'SM 活跃' },
+  { key: 'sm_issue', label: 'SM 指令发射' },
+  { key: 'tensor_active', label: 'Tensor 管线活跃' },
+]
+
+onMounted(async () => {
+  try {
+    const response = await fetch('/api/activity-probe')
+    if (response.ok) activityProbe.value = await response.json()
+  } catch { /* optional capture history */ }
+})
+
+async function runActivityProbe() {
+  probeBusy.value = true
+  probeError.value = ''
+  try {
+    const response = await fetch(`/api/activity-probe?gpu=${encodeURIComponent(probeGpu.value)}`, { method: 'POST' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`)
+    activityProbe.value = result
+  } catch (error) {
+    probeError.value = error.message || '采样失败'
+  } finally {
+    probeBusy.value = false
+  }
+}
 
 const gpuMetrics = [
   { key: 'vram', label: '专用显存', group: '内存', unit: 'GB', read: g => g.memory?.used == null ? null : g.memory.used / 1073741824 },
@@ -37,8 +71,8 @@ const processMetrics = [
   { key: 'committed_memory', label: 'Windows 提交量', group: '内存', unit: 'MB', read: (p) => p?.committed_memory == null ? null : p.committed_memory / 1048576 },
   { key: 'sm_util', label: 'SM 负载', group: '负载', unit: '%', read: (_, u) => u?.sm_util },
   { key: 'mem_util', label: '显存控制器', group: '负载', unit: '%', read: (_, u) => u?.mem_util },
-  { key: 'wddm_3d', label: 'WDDM 3D 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.['3d'] },
-  { key: 'wddm_compute', label: 'WDDM Compute 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.compute },
+  { key: 'wddm_3d', label: 'WDDM 3D 队列', group: '引擎', unit: '%', read: p => p?.engine_utilization?.['3d'] },
+  { key: 'wddm_compute', label: 'WDDM Compute 队列', group: '引擎', unit: '%', read: p => p?.engine_utilization?.compute },
   { key: 'wddm_copy', label: 'WDDM Copy 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.copy },
   { key: 'enc_util', label: '编码器', group: '引擎', unit: '%', read: (_, u) => u?.enc_util },
   { key: 'dec_util', label: '解码器', group: '引擎', unit: '%', read: (_, u) => u?.dec_util },
@@ -174,6 +208,40 @@ function chooseProcess(key) {
       <div class="intro-count"><strong><RollingValue :value="history.length" /></strong><span>采样点</span></div>
     </section>
 
+    <section class="activity-probe section-block" aria-labelledby="activity-heading">
+      <div class="section-heading">
+        <div><p class="eyebrow">ON DEMAND / HARDWARE COUNTERS</p><h2 id="activity-heading">计算单元活动</h2></div>
+        <div class="activity-probe-controls">
+          <label for="probe-gpu">采样设备</label>
+          <select id="probe-gpu" v-model="probeGpu" :disabled="probeBusy">
+            <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
+          </select>
+          <button type="button" :disabled="probeBusy || !gpus.length" @click="runActivityProbe">
+            {{ probeBusy ? '正在采集 5 秒…' : '采集硬件活动' }}
+          </button>
+        </div>
+      </div>
+      <p class="activity-probe-intro">按需用 Nsight Systems 以 10 Hz 采集 5 秒。探针仅统计整卡，不会把其他程序的活动归给选中的训练进程。</p>
+      <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
+      <div v-if="activityProbe" class="activity-grid">
+        <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading">
+          <span>{{ metric.label }}</span>
+          <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
+          <small>窗口平均 · 峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
+          <small>有活动的采样 <RollingValue :value="activityProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="activityProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
+        </article>
+      </div>
+      <div v-if="activityProbe?.process_context?.length" class="activity-process-context">
+        <span>同期进程 SM 负载 <small>独立读数 · 无法将上方 Tensor 活动归属到某个进程</small></span>
+        <div v-for="process in activityProbe.process_context" :key="process.pid">
+          <strong>{{ process.name }} <small>PID <RollingValue :value="process.pid" /></small></strong>
+          <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
+        </div>
+      </div>
+      <p v-else-if="!probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
+      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })}。` : '' }}不同指标的百分比口径不同，不能相加；0% 只表示采样窗口内未观测到活动。计算 warp 也可能来自图形 API 的计算着色器，不能据此确认某个进程使用了 CUDA。</p>
+    </section>
+
     <div class="mode-tabs" role="tablist" aria-label="分析对象">
       <button role="tab" :aria-selected="mode === 'gpu'" :class="{ active: mode === 'gpu' }" @click="mode = 'gpu'">GPU 指标</button>
       <button role="tab" :aria-selected="mode === 'process'" :class="{ active: mode === 'process' }" @click="mode = 'process'">进程指标</button>
@@ -214,7 +282,7 @@ function chooseProcess(key) {
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
         </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? 'WDDM 引擎分类约每两秒刷新；3D、Compute 和 Copy 取同类最忙引擎，Compute 不等于 CUDA，三者均不能推算 RT 或 Tensor Core 占用。进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? 'WDDM 分类约每两秒刷新；本机 CUDA 训练可能计入名为 3D 的队列，Compute 队列缺失不代表 CUDA 空闲。队列读数不能推算 RT 或 Tensor Core 占用。进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
       </section>
 
       <aside class="trend-side" aria-label="当前读数">
@@ -256,5 +324,6 @@ function chooseProcess(key) {
         </section>
       </aside>
     </div>
+
   </div>
 </template>

@@ -17,6 +17,7 @@ from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnec
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+from activity_probe import ActivityProbe, ProbeError
 from monitor import monitor
 from status_exports import render_prometheus, render_status_markdown, status_message
 
@@ -50,6 +51,8 @@ class TelemetryStore:
         self._pending: Future[dict[str, Any]] | None = None
         self._sequence = 0
         self.stream_id = uuid.uuid4().hex
+        self.activity_probe = ActivityProbe()
+        self.latest_activity: dict[str, Any] | None = None
         self.event_path = event_path or Path(__file__).parent / "data" / "display-events.jsonl"
         self.display_events: deque[dict[str, Any]] = deque(maxlen=200)
         self._last_display: dict[str, Any] | None = None
@@ -109,6 +112,45 @@ class TelemetryStore:
 
     def recent(self, limit: int) -> list[dict[str, Any]]:
         return [frame.as_message() for frame in list(self.history)[-limit:]]
+
+    async def capture_activity(self, gpu_id: int) -> dict[str, Any]:
+        result = await asyncio.to_thread(self.activity_probe.capture, gpu_id)
+        result["process_context"] = self._activity_process_context(result)
+        self.latest_activity = result
+        return result
+
+    def _activity_process_context(self, result: dict[str, Any]) -> list[dict[str, Any]]:
+        """Show concurrent process SM samples without assigning GPU counters to PIDs."""
+        start = result.get("window_started_at")
+        end = result.get("window_ended_at")
+        if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+            return []
+        samples: dict[int, list[float]] = {}
+        process_info: dict[int, dict[str, Any]] = {}
+        for frame in self.history:
+            if not start - 1 <= frame.timestamp <= end + 1:
+                continue
+            for row in frame.payload.get("process_utilization", []):
+                if row.get("gpu_id") != result["gpu_id"] or row.get("sm_util") is None:
+                    continue
+                samples.setdefault(row["pid"], []).append(float(row["sm_util"]))
+                process_info[row["pid"]] = row
+            for row in frame.payload.get("processes", []):
+                if row.get("gpu_id") == result["gpu_id"]:
+                    process_info[row["pid"]] = {**process_info.get(row["pid"], {}), **row}
+        context = []
+        for pid, values in samples.items():
+            if max(values) <= 0:
+                continue
+            info = process_info[pid]
+            context.append({
+                "pid": pid, "name": info.get("name", "Unknown"),
+                "used_memory": info.get("used_memory"),
+                "sm_mean_percent": round(sum(values) / len(values), 1),
+                "sm_peak_percent": max(values), "samples": len(values),
+            })
+        context.sort(key=lambda row: row["sm_mean_percent"], reverse=True)
+        return context[:5]
 
     async def poll(self) -> None:
         if self._pending is None:
@@ -188,7 +230,9 @@ def latest_frame() -> TelemetryFrame:
 @app.get("/api/status")
 async def status(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    return status_message(latest_frame().as_message())
+    message = status_message(latest_frame().as_message())
+    message["activity_probe"] = getattr(store, "latest_activity", None)
+    return message
 
 
 @app.get("/status.md")
@@ -223,6 +267,24 @@ async def prometheus_metrics(include_processes: bool = False) -> Response:
 @app.get("/api/history")
 async def history(limit: int = Query(default=120, ge=1, le=120)) -> list[dict[str, Any]]:
     return store.recent(limit)
+
+
+@app.post("/api/activity-probe")
+async def activity_probe(gpu: int = Query(ge=0)) -> dict[str, Any]:
+    frame = latest_frame()
+    if not any(row["id"] == gpu for row in frame.payload.get("gpus", [])):
+        raise HTTPException(status_code=404, detail="GPU not found")
+    try:
+        return await store.capture_activity(gpu)
+    except ProbeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/activity-probe")
+async def latest_activity_probe() -> dict[str, Any]:
+    if store.latest_activity is None:
+        raise HTTPException(status_code=404, detail="No activity probe captured yet")
+    return store.latest_activity
 
 
 @app.get("/api/display-events")
