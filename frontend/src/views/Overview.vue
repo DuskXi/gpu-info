@@ -1,11 +1,32 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useMonitorData } from '../composables/useMonitorData'
+import { useActivityProbe } from '../composables/useActivityProbe'
 import { bytes, number, percent, time } from '../format'
 import { memoryAccounts } from '../accounting'
 import { processPieGradient, processPieSliceAt, processVramComposition } from '../processVram'
 
 const { snapshot } = useMonitorData()
+const {
+  activityProbe, pipelineProbe, probeBusy, probeError, pipelineError,
+  loadLatest, capture, capturePipelines,
+} = useActivityProbe()
+onMounted(loadLatest)
+const homeActivityMetrics = [
+  { key: 'compute_sync', label: '计算派发' },
+  { key: 'compute_warps', label: '计算 warp' },
+  { key: 'sm_active', label: 'SM 活跃' },
+  { key: 'sm_issue', label: '指令发射' },
+  { key: 'tensor_active', label: 'Tensor' },
+  { key: 'dram_read', label: '显存读取' },
+]
+const homePipelineMetrics = [
+  { key: 'tensor_active', label: 'Tensor' },
+  { key: 'fma_light', label: 'FMA Light' },
+  { key: 'fma_heavy', label: 'FMA Heavy' },
+  { key: 'alu', label: 'ALU' },
+  { key: 'sfu', label: 'SFU / XU' },
+]
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
 const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
@@ -226,6 +247,38 @@ function displayLabel(display) {
                 </div>
               </template>
             </div>
+            <section class="gpu-activity" :aria-label="`GPU ${gpu.id} 整卡硬件活动`">
+              <div class="gpu-activity-head">
+                <div><span class="label">SM 与显存活动</span><small>整卡性能计数器 · 按需采集 5 秒</small></div>
+                  <div class="gpu-activity-actions">
+                    <button type="button" :disabled="probeBusy" @click="capture(gpu.id)">{{ probeBusy ? '采集中…' : '采集概况' }}</button>
+                    <button type="button" :disabled="probeBusy" @click="capturePipelines(gpu.id)">{{ probeBusy ? '采集中…' : '采集 SM 管线' }}</button>
+                  </div>
+              </div>
+              <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
+              <template v-if="activityProbe?.gpu_id === gpu.id">
+                <div class="gpu-activity-grid">
+                  <div v-for="metric in homeActivityMetrics" :key="metric.key">
+                    <span>{{ metric.label }}</span>
+                    <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
+                    <div class="gpu-activity-track"><i :style="{ width: `${Math.max(0, Math.min(100, activityProbe.metrics?.[metric.key]?.mean_percent ?? 0))}%` }"></i></div>
+                  </div>
+                </div>
+                <p>上次采样 <RollingValue :value="time(activityProbe.captured_at)" :amount="activityProbe.captured_at" /> · 窗口平均值，非实时读数。<router-link to="/detail">查看全部细分 ↗</router-link></p>
+              </template>
+                <p v-else class="gpu-activity-empty">这张卡尚无硬件活动采样。</p>
+                <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
+                <template v-if="pipelineProbe?.gpu_id === gpu.id">
+                  <div class="gpu-activity-grid gpu-pipeline-grid">
+                    <div v-for="metric in homePipelineMetrics" :key="metric.key">
+                      <span>{{ metric.label }}</span>
+                      <strong><RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.mean_percent" /></strong>
+                      <div class="gpu-activity-track"><i :style="{ width: `${Math.max(0, Math.min(100, pipelineProbe.metrics?.[metric.key]?.mean_percent ?? 0))}%` }"></i></div>
+                    </div>
+                  </div>
+                  <p>SM 管线 {{ time(pipelineProbe.captured_at) }} 的窗口平均。各管线占用率不能相加；仅 AD10x 可采集。</p>
+                </template>
+            </section>
             <div v-if="processCompositions.get(gpu.id)?.slices.length" class="vram-composition">
               <div class="vram-visuals">
                 <figure class="vram-chart">

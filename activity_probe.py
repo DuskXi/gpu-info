@@ -24,9 +24,21 @@ _METRICS = {
     "graphics_pixel": "Pixel Warps in Flight [Throughput %]",
     "compute_warps": "Compute Warps in Flight [Throughput %]",
     "tensor_active": "Tensor Active [Throughput %]",
+    "gr_active": "GR Active [Throughput %]",
     "compute_sync": "Sync Compute in Flight [Throughput %]",
     "compute_async": "Async Compute in Flight [Throughput %]",
+    "unallocated_warps": "Unallocated Warps in Active SMs [Throughput %]",
+    "dram_read": "DRAM Read Bandwidth [Throughput %]",
+    "dram_write": "DRAM Write Bandwidth [Throughput %]",
 }
+_PIPELINE_METRICS = {
+    "fma_light": "SM FMA Light Pipe Throughput [Throughput %]",
+    "fma_heavy": "SM FMA Heavy Pipe Throughput [Throughput %]",
+    "alu": "SM ALU Pipe Throughput [Throughput %]",
+    "sfu": "SM SFU Pipe Throughput [Throughput %]",
+    "tensor_active": "Tensor Active [Throughput %]",
+}
+_PIPELINE_CONFIG = Path(__file__).parent / "gpu_metrics" / "ad10x-pipes.config"
 
 
 class ProbeError(RuntimeError):
@@ -46,7 +58,7 @@ def find_nsys() -> Path | None:
     return sorted(candidates, reverse=True)[0] if candidates else None
 
 
-def parse_metrics(database: Path) -> dict[str, dict[str, Any]]:
+def parse_metrics(database: Path, kind: str = "general") -> dict[str, dict[str, Any]]:
     """Match metric names from the report instead of assuming GPU-specific IDs."""
     try:
         with closing(sqlite3.connect(database)) as connection:
@@ -58,8 +70,9 @@ def parse_metrics(database: Path) -> dict[str, dict[str, Any]]:
             ).fetchall()
     except sqlite3.Error as exc:
         raise ProbeError(f"Nsight 报告缺少 GPU 指标：{exc}") from exc
-    readings: dict[str, list[float]] = {key: [] for key in _METRICS}
-    by_name = {name: key for key, name in _METRICS.items()}
+    names = _PIPELINE_METRICS if kind == "pipelines" else _METRICS
+    readings: dict[str, list[float]] = {key: [] for key in names}
+    by_name = {name: key for key, name in names.items()}
     for name, value in rows:
         key = by_name.get(name)
         if key is not None and isinstance(value, (int, float)):
@@ -110,7 +123,9 @@ class ActivityProbe:
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
-    def capture(self, gpu_id: int) -> dict[str, Any]:
+    def capture(self, gpu_id: int, kind: str = "general") -> dict[str, Any]:
+        if kind not in ("general", "pipelines"):
+            raise ProbeError("未知硬件采样类型")
         if not self._lock.acquire(blocking=False):
             raise ProbeError("硬件探针正在采样，请等待本次结果")
         try:
@@ -121,24 +136,27 @@ class ActivityProbe:
                 base = Path(directory) / "capture"
                 report = base.with_suffix(".nsys-rep")
                 database = base.with_suffix(".sqlite")
-                _run([
+                command = [
                     str(nsys), "profile", "--trace=none", "--sample=none",
                     "--cpuctxsw=none", f"--gpu-metrics-device={gpu_id}",
                     "--gpu-metrics-frequency=10", "--duration=5",
                     f"--output={base}",
-                ], timeout=35)
+                ]
+                if kind == "pipelines":
+                    command.insert(-1, f"--gpu-metrics-set=file:{_PIPELINE_CONFIG}")
+                _run(command, timeout=35)
                 if not report.is_file():
                     raise ProbeError("Nsight 未生成 GPU 指标报告")
                 _run([
                     str(nsys), "export", "--type=sqlite", f"--output={database}",
                     str(report),
                 ], timeout=20)
-                metrics = parse_metrics(database)
+                metrics = parse_metrics(database, kind)
                 window = report_window(database)
             if not metrics:
-                raise ProbeError("本次报告没有可用的 SM / 图形 / Tensor 指标")
+                raise ProbeError("本次报告没有可用的 GPU 硬件指标；管线采样仅支持 AD10x 设备")
             return {
-                "gpu_id": gpu_id, "captured_at": time.time(),
+                "gpu_id": gpu_id, "kind": kind, "captured_at": time.time(),
                 "duration_seconds": 5, "frequency_hz": 10,
                 "scope": "device", "source": "Nsight Systems GPU Metrics",
                 "metrics": metrics,

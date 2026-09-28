@@ -11,7 +11,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -53,6 +53,7 @@ class TelemetryStore:
         self.stream_id = uuid.uuid4().hex
         self.activity_probe = ActivityProbe()
         self.latest_activity: dict[str, Any] | None = None
+        self.latest_pipeline_activity: dict[str, Any] | None = None
         self.event_path = event_path or Path(__file__).parent / "data" / "display-events.jsonl"
         self.display_events: deque[dict[str, Any]] = deque(maxlen=200)
         self._last_display: dict[str, Any] | None = None
@@ -113,10 +114,13 @@ class TelemetryStore:
     def recent(self, limit: int) -> list[dict[str, Any]]:
         return [frame.as_message() for frame in list(self.history)[-limit:]]
 
-    async def capture_activity(self, gpu_id: int) -> dict[str, Any]:
-        result = await asyncio.to_thread(self.activity_probe.capture, gpu_id)
+    async def capture_activity(self, gpu_id: int, kind: str = "general") -> dict[str, Any]:
+        result = await asyncio.to_thread(self.activity_probe.capture, gpu_id, kind)
         result["process_context"] = self._activity_process_context(result)
-        self.latest_activity = result
+        if kind == "pipelines":
+            self.latest_pipeline_activity = result
+        else:
+            self.latest_activity = result
         return result
 
     def _activity_process_context(self, result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -232,6 +236,7 @@ async def status(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     message = status_message(latest_frame().as_message())
     message["activity_probe"] = getattr(store, "latest_activity", None)
+    message["pipeline_probe"] = getattr(store, "latest_pipeline_activity", None)
     return message
 
 
@@ -270,21 +275,26 @@ async def history(limit: int = Query(default=120, ge=1, le=120)) -> list[dict[st
 
 
 @app.post("/api/activity-probe")
-async def activity_probe(gpu: int = Query(ge=0)) -> dict[str, Any]:
+async def activity_probe(
+    gpu: int = Query(ge=0), kind: Literal["general", "pipelines"] = "general"
+) -> dict[str, Any]:
     frame = latest_frame()
     if not any(row["id"] == gpu for row in frame.payload.get("gpus", [])):
         raise HTTPException(status_code=404, detail="GPU not found")
     try:
-        return await store.capture_activity(gpu)
+        return await store.capture_activity(gpu, kind)
     except ProbeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.get("/api/activity-probe")
-async def latest_activity_probe() -> dict[str, Any]:
-    if store.latest_activity is None:
+async def latest_activity_probe(
+    kind: Literal["general", "pipelines"] = "general"
+) -> dict[str, Any]:
+    result = store.latest_pipeline_activity if kind == "pipelines" else store.latest_activity
+    if result is None:
         raise HTTPException(status_code=404, detail="No activity probe captured yet")
-    return store.latest_activity
+    return result
 
 
 @app.get("/api/display-events")

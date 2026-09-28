@@ -2,14 +2,16 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
-  Chart as ChartJS, CategoryScale, LinearScale, PointElement,
+  Chart as ChartJS, CategoryScale, LinearScale, LogarithmicScale, PointElement,
   LineElement, Tooltip, Legend,
 } from 'chart.js'
 import { useMonitorData, procKey } from '../composables/useMonitorData'
+import { useActivityProbe } from '../composables/useActivityProbe'
 import { bytes, number, percent } from '../format'
+import { topProcessTargets } from '../processComparison'
 import ProcessPicker from '../components/ProcessPicker.vue'
 
-ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
+ChartJS.register(CategoryScale, LinearScale, LogarithmicScale, PointElement, LineElement, Tooltip, Legend)
 
 const { snapshot, history } = useMonitorData()
 const mode = ref('gpu')
@@ -19,38 +21,53 @@ const processManuallySelected = ref(false)
 const gpuMetric = ref('vram')
 const processMetric = ref('used_memory')
 const probeGpu = ref('0')
-const probeBusy = ref(false)
-const probeError = ref('')
-const activityProbe = ref(null)
-const activityMetrics = [
-  { key: 'graphics_vertex', label: '图形 · 顶点 / 几何 warp' },
-  { key: 'graphics_pixel', label: '图形 · 像素 warp' },
-  { key: 'compute_warps', label: '计算 warp' },
-  { key: 'sm_active', label: 'SM 活跃' },
-  { key: 'sm_issue', label: 'SM 指令发射' },
-  { key: 'tensor_active', label: 'Tensor 管线活跃' },
+const probeDetails = ref(null)
+const compareTop = ref(false)
+const topCount = ref(5)
+const logMemoryScale = ref(true)
+const {
+  activityProbe, pipelineProbe, probeBusy, probeError, pipelineError,
+  loadLatest, capture, capturePipelines,
+} = useActivityProbe()
+const activityGroups = [
+  { label: '工作进入与并行度', metrics: [
+    { key: 'gr_active', label: '图形 / 计算前端活跃' },
+    { key: 'compute_sync', label: '同步计算派发' },
+    { key: 'compute_async', label: '异步计算派发' },
+    { key: 'compute_warps', label: '计算 warp 在飞' },
+    { key: 'sm_active', label: 'SM 有 warp 驻留' },
+    { key: 'unallocated_warps', label: '活跃 SM 未分配 warp 槽位' },
+  ] },
+  { label: '执行管线', metrics: [
+    { key: 'sm_issue', label: 'SM 指令发射' },
+    { key: 'tensor_active', label: 'Tensor 管线活跃' },
+  ] },
+  { label: '显存与图形', metrics: [
+    { key: 'dram_read', label: '显存读取带宽' },
+    { key: 'dram_write', label: '显存写入带宽' },
+    { key: 'graphics_vertex', label: '图形 · 顶点 / 几何 warp' },
+    { key: 'graphics_pixel', label: '图形 · 像素 warp' },
+  ] },
+]
+const activityMetrics = activityGroups.flatMap(group =>
+  group.metrics.map(metric => ({ ...metric, group: group.label })))
+const pipelineMetrics = [
+  { key: 'tensor_active', label: 'Tensor', group: '矩阵运算' },
+  { key: 'fma_light', label: 'FMA Light', group: '标量算术' },
+  { key: 'fma_heavy', label: 'FMA Heavy', group: '标量算术' },
+  { key: 'alu', label: 'ALU', group: '整数 / 逻辑' },
+  { key: 'sfu', label: 'SFU / XU', group: '特殊函数 / 类型转换' },
 ]
 
-onMounted(async () => {
-  try {
-    const response = await fetch('/api/activity-probe')
-    if (response.ok) activityProbe.value = await response.json()
-  } catch { /* optional capture history */ }
-})
+onMounted(loadLatest)
 
 async function runActivityProbe() {
-  probeBusy.value = true
-  probeError.value = ''
-  try {
-    const response = await fetch(`/api/activity-probe?gpu=${encodeURIComponent(probeGpu.value)}`, { method: 'POST' })
-    const result = await response.json()
-    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`)
-    activityProbe.value = result
-  } catch (error) {
-    probeError.value = error.message || '采样失败'
-  } finally {
-    probeBusy.value = false
-  }
+  if (probeDetails.value) probeDetails.value.open = true
+  await capture(probeGpu.value)
+}
+async function runPipelineProbe() {
+  if (probeDetails.value) probeDetails.value.open = true
+  await capturePipelines(probeGpu.value)
 }
 
 const gpuMetrics = [
@@ -79,6 +96,8 @@ const processMetrics = [
 ]
 const metrics = computed(() => mode.value === 'gpu' ? gpuMetrics : processMetrics)
 const activeMetric = computed(() => metrics.value.find(m => m.key === (mode.value === 'gpu' ? gpuMetric.value : processMetric.value)))
+const logarithmic = computed(() => mode.value === 'process' && compareTop.value
+  && activeMetric.value?.group === '内存' && logMemoryScale.value)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
 const processOptions = computed(() => {
   const options = new Map()
@@ -115,7 +134,25 @@ const counterExceedsCapacity = computed(() =>
   && Number.isFinite(selectedProcessGpu.value?.memory?.total)
   && selectedProcessInfo.value.claimed_memory > selectedProcessGpu.value.memory.total
 )
-const palette = ['#007c96', '#425ec4', '#b36116', '#7953aa', '#b34e66']
+const palette = [
+  '#007c96', '#425ec4', '#b36116', '#7953aa', '#b34e66',
+  '#2d7862', '#a33c38', '#4c7291', '#67731f', '#6c5289',
+]
+const processColors = new Map()
+
+function coloredTargets(items) {
+  const used = new Set()
+  return items.map((item, index) => {
+    if (mode.value === 'gpu') return { ...item, color: palette[index % palette.length] }
+    let color = processColors.get(item.id)
+    if (!color || used.has(color)) {
+      color = palette.find(candidate => !used.has(candidate)) || palette[index % palette.length]
+      processColors.set(item.id, color)
+    }
+    used.add(color)
+    return { ...item, color }
+  })
+}
 
 function valueAt(frame, id) {
   if (mode.value === 'gpu') {
@@ -129,19 +166,30 @@ function valueAt(frame, id) {
 
 const targets = computed(() => {
   if (mode.value === 'process') {
-    return processKey.value ? [{ id: processKey.value, name: selectedProcessInfo.value?.name || processKey.value }] : []
+    if (compareTop.value) {
+      return coloredTargets(topProcessTargets(
+        processOptions.value, activeMetric.value, selectedGpu.value, topCount.value,
+      ))
+    }
+    return processKey.value ? coloredTargets([{
+      id: processKey.value,
+      name: `${selectedProcessInfo.value?.name || '未知进程'} · ${selectedProcessInfo.value?.pid ?? ''}`,
+    }]) : []
   }
-  return gpus.value
+  return coloredTargets(gpus.value
     .filter(g => selectedGpu.value === 'all' || g.id === Number(selectedGpu.value))
-    .map(g => ({ id: g.id, name: `GPU ${g.id}` }))
+    .map(g => ({ id: g.id, name: `GPU ${g.id}` })))
 })
 const chartData = computed(() => ({
   labels: history.value.map(frame => new Date(frame.timestamp * 1000).toLocaleTimeString('zh-CN', { hour12: false })),
-  datasets: targets.value.map((target, i) => ({
+  datasets: targets.value.map(target => ({
     label: target.name,
-    data: history.value.map(frame => valueAt(frame, target.id)),
-    borderColor: palette[i % palette.length],
-    backgroundColor: palette[i % palette.length],
+    data: history.value.map(frame => {
+      const value = valueAt(frame, target.id)
+      return logarithmic.value && value != null && value <= 0 ? null : value
+    }),
+    borderColor: target.color,
+    backgroundColor: target.color,
     pointRadius: 0,
     pointHoverRadius: 4,
     borderWidth: 2,
@@ -161,27 +209,38 @@ const chartOptions = computed(() => ({
       border: { color: '#b7cdd5' },
     },
     y: {
-      beginAtZero: activeMetric.value?.unit === '%',
+      type: logarithmic.value ? 'logarithmic' : 'linear',
+      beginAtZero: !logarithmic.value && activeMetric.value?.unit === '%',
       suggestedMax: activeMetric.value?.unit === '%' ? 100 : undefined,
       grid: { color: '#d8e6eb' },
-      ticks: { color: '#526e7a', callback: value => `${value} ${activeMetric.value?.unit ?? ''}` },
+      ticks: {
+        color: '#526e7a', maxTicksLimit: 10,
+        callback: value => {
+          if (logarithmic.value) {
+            const numeric = Number(value)
+            const mantissa = numeric / 10 ** Math.floor(Math.log10(numeric))
+            if (![1, 2, 5].some(mark => Math.abs(mantissa - mark) < 0.001)) return ''
+          }
+          return `${value} ${activeMetric.value?.unit ?? ''}`
+        },
+      },
       border: { display: false },
     },
   },
   plugins: {
-    legend: { display: targets.value.length > 1, position: 'bottom', labels: { color: '#526e7a', usePointStyle: true, boxWidth: 8 } },
+    legend: { display: targets.value.length > 1 && !(mode.value === 'process' && compareTop.value), position: 'bottom', labels: { color: '#526e7a', usePointStyle: true, boxWidth: 8 } },
     tooltip: { backgroundColor: '#122d3b', titleColor: '#fbfeff', bodyColor: '#fbfeff', displayColors: targets.value.length > 1 },
   },
 }))
-const readings = computed(() => targets.value.map((target, i) => {
-  const data = chartData.value.datasets[i]?.data ?? []
+const readings = computed(() => targets.value.map(target => {
+  const data = history.value.map(frame => valueAt(frame, target.id))
   const values = data.filter(v => v != null && Number.isFinite(v))
   return {
     ...target,
     current: data.at(-1) ?? null,
     min: values.length ? Math.min(...values) : null,
     max: values.length ? Math.max(...values) : null,
-    color: palette[i % palette.length],
+    color: target.color,
   }
 }))
 function display(value) {
@@ -219,12 +278,18 @@ function chooseProcess(key) {
           <button type="button" :disabled="probeBusy || !gpus.length" @click="runActivityProbe">
             {{ probeBusy ? '正在采集 5 秒…' : '采集硬件活动' }}
           </button>
+          <button type="button" :disabled="probeBusy || !gpus.length" @click="runPipelineProbe">
+            {{ probeBusy ? '采集中…' : '采集 SM 管线' }}
+          </button>
         </div>
       </div>
+      <details ref="probeDetails" class="activity-probe-details">
+        <summary>查看设备级采样细节 <span v-if="activityProbe">SM {{ number(activityProbe.metrics?.sm_active?.mean_percent, 1, '%') }} · Tensor {{ number(activityProbe.metrics?.tensor_active?.mean_percent, 1, '%') }}</span><span v-if="pipelineProbe">ALU {{ number(pipelineProbe.metrics?.alu?.mean_percent, 1, '%') }} · FMA Heavy {{ number(pipelineProbe.metrics?.fma_heavy?.mean_percent, 1, '%') }}</span><span v-if="probeError || pipelineError">采样失败 · 展开查看</span></summary>
       <p class="activity-probe-intro">按需用 Nsight Systems 以 10 Hz 采集 5 秒。探针仅统计整卡，不会把其他程序的活动归给选中的训练进程。</p>
       <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
-      <div v-if="activityProbe" class="activity-grid">
-        <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading">
+      <div v-if="activityProbe" class="activity-grid activity-grid-detailed">
+        <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
+          <small class="activity-reading-group">{{ metric.group }}</small>
           <span>{{ metric.label }}</span>
           <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
           <small>窗口平均 · 峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
@@ -238,8 +303,32 @@ function chooseProcess(key) {
           <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
         </div>
       </div>
-      <p v-else-if="!probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
-      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })}。` : '' }}不同指标的百分比口径不同，不能相加；0% 只表示采样窗口内未观测到活动。计算 warp 也可能来自图形 API 的计算着色器，不能据此确认某个进程使用了 CUDA。</p>
+      <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
+      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}不同百分比不能相加。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
+      <div class="pipeline-probe">
+        <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>单独按需采样 · GPU 整卡</span></div>
+        <p class="activity-probe-intro">从实际执行的指令管线观察 Tensor、FMA、ALU 和 SFU/XU。FMA 也可执行部分整数乘法，XU 也处理类型转换；这些值不是精确的 FP32 核心利用率。各管线峰值基准不同，百分比不能相加。</p>
+        <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
+        <div v-if="pipelineProbe" class="activity-grid activity-grid-pipelines">
+          <article v-for="metric in pipelineMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
+            <small class="activity-reading-group">{{ metric.group }}</small>
+            <span>{{ metric.label }}</span>
+            <strong><RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.mean_percent" /></strong>
+            <small>窗口平均 · 峰值 <RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.peak_percent" /></small>
+            <small>有活动的采样 <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
+          </article>
+        </div>
+        <div v-if="pipelineProbe?.process_context?.length" class="activity-process-context">
+          <span>同期进程 SM 负载 <small>独立读数 · 不能据此分配整卡指令管线值</small></span>
+          <div v-for="process in pipelineProbe.process_context" :key="process.pid">
+            <strong>{{ process.name }} <small>PID <RollingValue :value="process.pid" /></small></strong>
+            <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
+          </div>
+        </div>
+        <p v-if="!pipelineProbe && !probeBusy" class="activity-probe-empty">尚无 SM 管线采样。使用上方“采集 SM 管线”按钮，支持 AD10x（RTX 40 系列）设备。</p>
+        <p v-if="pipelineProbe" class="data-note">GPU {{ pipelineProbe.gpu_id }} · {{ new Date(pipelineProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) }}。这是另一段 5 秒、10 Hz 的粗粒度窗口，不能和上面的常规采样逐点对齐。当前计数器不提供进程归属；训练进程的 SM 负载可作同期线索，不能把整卡 FMA 或 Tensor 值直接分配给它。指令条数在本机导出时曾溢出，故仅展示管线吞吐率。</p>
+      </div>
+      </details>
     </section>
 
     <div class="mode-tabs" role="tablist" aria-label="分析对象">
@@ -266,12 +355,25 @@ function chooseProcess(key) {
             <h2>{{ activeMetric?.label }}</h2>
           </div>
           <div class="target-control">
+            <label v-if="mode === 'process'" class="compare-switch"><input v-model="compareTop" type="checkbox"><span>对比排名靠前的进程</span></label>
+            <div v-if="mode === 'process' && compareTop" class="top-process-controls">
+              <label for="top-count">前</label>
+              <select id="top-count" v-model.number="topCount">
+                <option :value="3">3 个</option><option :value="5">5 个</option><option :value="8">8 个</option>
+              </select>
+              <label for="top-gpu">设备</label>
+              <select id="top-gpu" v-model="selectedGpu">
+                <option value="all">全部 GPU</option>
+                <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
+              </select>
+            </div>
+            <label v-if="mode === 'process' && compareTop && activeMetric?.group === '内存'" class="compare-switch"><input v-model="logMemoryScale" type="checkbox"><span>对数纵轴 · 保留真实读数</span></label>
             <label v-if="mode === 'gpu'" for="gpu-select">观察对象</label>
             <select v-if="mode === 'gpu'" id="gpu-select" v-model="selectedGpu">
               <option value="all">对比全部 GPU</option>
               <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }} · {{ gpu.name }}</option>
             </select>
-            <ProcessPicker v-else :processes="processOptions" :selected-key="selectedProcess"
+            <ProcessPicker v-else-if="!compareTop" :processes="processOptions" :selected-key="selectedProcess"
               @select="chooseProcess" />
           </div>
         </div>
@@ -281,8 +383,15 @@ function chooseProcess(key) {
         </div>
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
+          <div v-if="mode === 'process' && compareTop" class="trend-legend" aria-label="进程曲线图例">
+            <div v-for="reading in readings" :key="reading.id">
+              <i :style="{ background: reading.color }"></i>
+              <span>{{ reading.name }}</span>
+              <strong><RollingValue :value="display(reading.current)" :amount="reading.current" /></strong>
+            </div>
+          </div>
         </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? 'WDDM 分类约每两秒刷新；本机 CUDA 训练可能计入名为 3D 的队列，Compute 队列缺失不代表 CUDA 空闲。队列读数不能推算 RT 或 Tensor Core 占用。进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。{{ mode === 'process' && compareTop ? '排名按当前选中指标的最新有效值确定；缺失值不参与排名，进程退出后的历史保留为空白。' : '进程退出后的采样保留为空白。' }}{{ logarithmic ? '对数纵轴便于同时看大、小进程；真实值见图例，0 无法绘在对数轴上。' : '' }}{{ mode === 'process' ? 'WDDM 分类约每两秒刷新；本机 CUDA 训练可能计入名为 3D 的队列，Compute 队列缺失不代表 CUDA 空闲。队列读数不能推算 RT 或 Tensor Core 占用。进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
       </section>
 
       <aside class="trend-side" aria-label="当前读数">
@@ -311,7 +420,7 @@ function chooseProcess(key) {
           </div>
         </section>
 
-        <section v-if="mode === 'process' && selectedProcessInfo" class="detail-summary process-memory-summary" aria-label="进程显存口径">
+        <section v-if="mode === 'process' && !compareTop && selectedProcessInfo" class="detail-summary process-memory-summary" aria-label="进程显存口径">
           <div class="section-heading"><div><p class="eyebrow">MEMORY / ACCOUNTING</p><h2>显存口径</h2></div></div>
           <div class="memory-check-grid">
             <div><span>{{ selectedProcessInfo.memory_source === 'Windows GPU counters' ? '进程本地用量 · 含共享' : '进程用量 · NVML' }}</span><strong><RollingValue :value="bytes(selectedProcessInfo.used_memory)" :amount="selectedProcessInfo.used_memory" /></strong></div>
