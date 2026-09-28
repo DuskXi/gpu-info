@@ -1,4 +1,5 @@
 import unittest
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -7,6 +8,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from main import TelemetryFrame, TelemetryStore, app
+from status_exports import render_prometheus, sample_health
 
 
 class StoreTests(unittest.IsolatedAsyncioTestCase):
@@ -66,19 +68,22 @@ class StoreTests(unittest.IsolatedAsyncioTestCase):
 
 class ExportEndpointTests(unittest.TestCase):
     def test_root_exports_use_the_same_frame_without_new_capture(self):
+        sampled_at = time.time()
         payload = {
             "system": {"cpu_percent": 17.5, "memory": {"used": 1024, "total": 2048, "percent": 50}},
             "gpus": [{"id": 0, "name": "Test GPU", "memory": {"total": 200, "used": 150, "free": 50},
                       "utilization": {"gpu": 42, "memory": None}, "temperature": 60,
-                      "power": {"usage": 120.5}}],
+                      "power": {"usage": 120.5}, "clocks": {"graphics": 1200}}],
             "processes": [{"gpu_id": 0, "pid": 42, "name": 'render"\\worker|x',
                            "local_memory": 80, "claimed_memory": 900, "cpu_percent": 5,
                            "gpu_percent": None, "disk_bytes_per_sec": 1024,
                            "memory_source": "Windows GPU counters"}],
             "process_utilization": [], "windows_adapter_memory": [],
-            "display_state": {"count": 1, "displays": []}, "source": "NVML", "errors": [],
+            "display_state": {"count": 1, "displays": []},
+            "display_sampled_at": sampled_at, "processes_sampled_at": sampled_at,
+            "source": "NVML + Windows GPU counters", "errors": [],
         }
-        frame = TelemetryFrame("stream", 7, 1234567890.0, payload)
+        frame = TelemetryFrame("stream", 7, sampled_at, payload)
         with patch("main.store", SimpleNamespace(latest=frame)), \
              patch("main.monitor.capture", side_effect=AssertionError("new capture")):
             client = TestClient(app)
@@ -86,9 +91,15 @@ class ExportEndpointTests(unittest.TestCase):
             old_response = client.get("/api/status")
             markdown = client.get("/status.md")
             metrics = client.get("/metrics")
+            process_metrics = client.get("/metrics?include_processes=true")
 
-        self.assertEqual(json_response.json(), old_response.json())
+        self.assertEqual(
+            {key: value for key, value in json_response.json().items() if key != "health"},
+            {key: value for key, value in old_response.json().items() if key != "health"},
+        )
         self.assertEqual(json_response.json()["sequence"], 7)
+        self.assertTrue(json_response.json()["health"]["snapshot_fresh"])
+        self.assertTrue(json_response.json()["health"]["process_fresh"])
         self.assertEqual(json_response.headers["cache-control"], "no-store")
         self.assertEqual(markdown.status_code, 200)
         self.assertTrue(markdown.headers["content-type"].startswith("text/markdown"))
@@ -96,12 +107,49 @@ class ExportEndpointTests(unittest.TestCase):
         self.assertIn("专用计数", markdown.text)
         self.assertEqual(metrics.status_code, 200)
         self.assertIn("version=0.0.4", metrics.headers["content-type"])
+        self.assertIn("gpu_info_up 1", metrics.text)
         self.assertIn("gpu_info_gpu_memory_used_bytes{gpu=\"0\",name=\"Test GPU\"} 150", metrics.text)
-        self.assertIn("gpu_info_process_local_memory_bytes{gpu=\"0\",pid=\"42\"", metrics.text)
-        self.assertIn('name="render\\"\\\\worker|x"', metrics.text)
-        self.assertNotIn("gpu_info_gpu_memory_controller_utilization_percent{", metrics.text)
-        self.assertNotIn("gpu_info_process_gpu_percent{", metrics.text)
+        self.assertIn("gpu_info_gpu_utilization_ratio{gpu=\"0\",name=\"Test GPU\"} 0.42", metrics.text)
+        self.assertIn("gpu_info_gpu_graphics_clock_hertz{gpu=\"0\",name=\"Test GPU\"} 1200000000", metrics.text)
+        self.assertNotIn("gpu_info_process_local_memory_bytes{", metrics.text)
+        self.assertIn("gpu_info_process_local_memory_bytes{gpu=\"0\",pid=\"42\"", process_metrics.text)
+        self.assertIn('name="render\\"\\\\worker|x"', process_metrics.text)
+        self.assertNotIn("gpu_info_gpu_memory_controller_utilization_ratio{", metrics.text)
+        self.assertNotIn("gpu_info_process_gpu_ratio{", process_metrics.text)
         self.assertIn("gpu_info_display_count 1", metrics.text)
+
+    def test_stale_frames_and_process_counters_are_marked_and_not_reexported(self):
+        now = 1000.0
+        payload = {
+            "timestamp": 990.0, "source": "NVML + Windows GPU counters",
+            "system": {"cpu_percent": 12},
+            "gpus": [{"id": 0, "name": "Test", "memory": {"used": 100}}],
+            "processes": [{"gpu_id": 0, "pid": 42, "name": "old", "local_memory": 50}],
+            "processes_sampled_at": 969.0,
+        }
+        health = sample_health(payload, now=now)
+        self.assertFalse(health["snapshot_fresh"])
+        self.assertFalse(health["process_fresh"])
+        with patch("status_exports.time.time", return_value=now):
+            metrics = render_prometheus(payload, include_processes=True)
+        self.assertIn("gpu_info_up 0", metrics)
+        self.assertNotIn("gpu_info_gpu_memory_used_bytes{", metrics)
+        self.assertNotIn("gpu_info_process_local_memory_bytes{", metrics)
+        frame = TelemetryFrame("stream", 8, 990.0, payload)
+        with patch("main.store", SimpleNamespace(latest=frame)), \
+             patch("status_exports.time.time", return_value=now):
+            client = TestClient(app)
+            self.assertFalse(client.get("/status.json").json()["health"]["snapshot_fresh"])
+            self.assertIn("最后一次成功采样的旧读数", client.get("/status.md").text)
+
+        payload["timestamp"] = 999.0
+        health = sample_health(payload, now=now)
+        self.assertTrue(health["snapshot_fresh"])
+        self.assertFalse(health["process_fresh"])
+        with patch("status_exports.time.time", return_value=now):
+            metrics = render_prometheus(payload, include_processes=True)
+        self.assertIn("gpu_info_gpu_memory_used_bytes{", metrics)
+        self.assertNotIn("gpu_info_process_local_memory_bytes{", metrics)
 
     def test_root_exports_report_missing_first_frame(self):
         with patch("main.store", SimpleNamespace(latest=None)):

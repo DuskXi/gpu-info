@@ -18,7 +18,7 @@ from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from monitor import monitor
-from status_exports import render_prometheus, render_status_markdown
+from status_exports import render_prometheus, render_status_markdown, status_message
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +188,7 @@ def latest_frame() -> TelemetryFrame:
 @app.get("/api/status")
 async def status(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
-    return latest_frame().as_message()
+    return status_message(latest_frame().as_message())
 
 
 @app.get("/status.md")
@@ -202,7 +202,7 @@ async def status_markdown() -> Response:
 
 
 @app.get("/metrics")
-async def prometheus_metrics() -> Response:
+async def prometheus_metrics(include_processes: bool = False) -> Response:
     frame = store.latest
     if frame is None:
         return Response(
@@ -214,7 +214,7 @@ async def prometheus_metrics() -> Response:
             headers={"Cache-Control": "no-store"},
         )
     return Response(
-        render_prometheus(frame.as_message()),
+        render_prometheus(frame.as_message(), include_processes=include_processes),
         media_type="text/plain; version=0.0.4",
         headers={"Cache-Control": "no-store"},
     )

@@ -35,17 +35,14 @@ function deviceFree(gpu) {
     : Number.isFinite(memory?.total) && Number.isFinite(memory?.used)
       ? Math.max(0, memory.total - memory.used) : null
 }
-function openTooltip(event, key, detail) {
-  if (tooltip.value?.key === key) {
-    tooltip.value = { ...tooltip.value, ...detail }
-    return
-  }
+function openTooltip(event, key, target) {
+  if (tooltip.value?.key === key) return
   const rect = event.currentTarget.getBoundingClientRect()
   const x = Number.isFinite(event.clientX) ? event.clientX : rect.left + rect.width / 2
   const y = Number.isFinite(event.clientY) ? event.clientY : rect.top + rect.height / 2
   const left = Math.max(12, Math.min(window.innerWidth - 266, x + 14))
   const top = y + 300 > window.innerHeight ? Math.max(12, y - 310) : y + 14
-  tooltip.value = { ...detail, key, left, top }
+  tooltip.value = { ...target, key, left, top }
 }
 function closeTooltip(key) {
   if (tooltip.value?.key === key) tooltip.value = null
@@ -66,8 +63,34 @@ function processDetail(slice, context) {
   }
 }
 function openProcessTooltip(event, key, slice, context) {
-  openTooltip(event, key, processDetail(slice, context))
+  openTooltip(event, key, {
+    kind: 'process', gpuId: Number(key.split(':')[0]), pid: slice.pid,
+    context, zoom: context === '其余进程放大图',
+  })
 }
+function deviceDetail(gpu, kind) {
+  const used = kind === 'used'
+  const value = used ? gpu.memory?.used : deviceFree(gpu)
+  return {
+    name: used ? '整卡显存已用' : '整卡显存可用',
+    subtitle: `GPU ${gpu.id} · NVML`,
+    value: bytes(value),
+    share: `${number(used ? devicePercent(gpu) : 100 - devicePercent(gpu), 1, '%')} · 物理显存总量`,
+    note: '整卡读数；无法据此划分各进程的独占显存',
+    color: used ? '#0072b2' : '#d8e6eb',
+  }
+}
+const tooltipDetail = computed(() => {
+  const target = tooltip.value
+  if (!target) return null
+  const gpu = gpus.value.find(item => item.id === target.gpuId)
+  if (!gpu) return null
+  if (target.kind === 'device') return { ...target, ...deviceDetail(gpu, target.deviceKind) }
+  const composition = processCompositions.value.get(target.gpuId)
+  const slices = target.zoom ? composition?.zoom?.slices : composition?.slices
+  const slice = slices?.find(item => item.pid === target.pid)
+  return slice ? { ...target, ...processDetail(slice, target.context) } : null
+})
 function onPieMove(event, slices, gpuId, kind) {
   const rect = event.currentTarget.getBoundingClientRect()
   const radius = rect.width / 2
@@ -76,19 +99,12 @@ function onPieMove(event, slices, gpuId, kind) {
     (event.clientY - rect.top - radius) / radius)
   const prefix = `${gpuId}:pie:${kind}:`
   if (index < 0) return closeTooltipGroup(prefix)
-  openProcessTooltip(event, `${prefix}${index}`, slices[index],
+  openProcessTooltip(event, `${prefix}${slices[index].pid ?? 'other'}`, slices[index],
     kind === 'zoom' ? '其余进程放大图' : '全体进程读数')
 }
 function openDeviceTooltip(event, gpu, kind) {
-  const used = kind === 'used'
-  const value = used ? gpu.memory?.used : deviceFree(gpu)
   openTooltip(event, `${gpu.id}:device:${kind}`, {
-    name: used ? '整卡显存已用' : '整卡显存可用',
-    subtitle: `GPU ${gpu.id} · NVML`,
-    value: bytes(value),
-    share: `${number(used ? devicePercent(gpu) : 100 - devicePercent(gpu), 1, '%')} · 物理显存总量`,
-    note: '整卡读数；无法据此划分各进程的独占显存',
-    color: used ? '#0072b2' : '#d8e6eb',
+    kind: 'device', gpuId: gpu.id, deviceKind: kind,
   })
 }
 
@@ -200,13 +216,13 @@ function displayLabel(display) {
               <template v-if="processCompositions.get(gpu.id)?.slices.length">
                 <div class="vram-bar-heading"><span>进程读数构成 <small>可重复计入</small></span><span>Σ {{ bytes(processCompositions.get(gpu.id).total) }}</span></div>
                 <div class="meter process-meter" role="group" :aria-label="`GPU ${gpu.id} 进程显存读数构成；合计 ${bytes(processCompositions.get(gpu.id).total)}`">
-                  <button v-for="(slice, index) in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button"
+                  <button v-for="slice in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button"
                     :style="{ width: `${slice.percent}%`, background: slice.color }"
                     :aria-label="`${slice.name} ${bytes(slice.value)}，占进程读数 ${number(slice.percent, 1, '%')}`"
-                    @pointerenter="openProcessTooltip($event, `${gpu.id}:bar:${index}`, slice, '进程读数合计')"
-                    @pointerleave="closeTooltip(`${gpu.id}:bar:${index}`)"
-                    @focus="openProcessTooltip($event, `${gpu.id}:bar:${index}`, slice, '进程读数合计')"
-                    @blur="closeTooltip(`${gpu.id}:bar:${index}`)"></button>
+                    @pointerenter="openProcessTooltip($event, `${gpu.id}:bar:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
+                    @pointerleave="closeTooltip(`${gpu.id}:bar:${slice.pid ?? 'other'}`)"
+                    @focus="openProcessTooltip($event, `${gpu.id}:bar:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
+                    @blur="closeTooltip(`${gpu.id}:bar:${slice.pid ?? 'other'}`)"></button>
                 </div>
               </template>
             </div>
@@ -231,11 +247,11 @@ function displayLabel(display) {
               </div>
               <div class="vram-legend">
                 <span class="label">进程 VRAM 分布 <small>GPU {{ gpu.id }} · {{ time(snapshot?.processes_sampled_at) }}</small></span>
-                <button v-for="(slice, index) in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button" class="vram-legend-row"
-                  @pointerenter="openProcessTooltip($event, `${gpu.id}:legend:${index}`, slice, '进程读数合计')"
-                  @pointerleave="closeTooltip(`${gpu.id}:legend:${index}`)"
-                  @focus="openProcessTooltip($event, `${gpu.id}:legend:${index}`, slice, '进程读数合计')"
-                  @blur="closeTooltip(`${gpu.id}:legend:${index}`)">
+                <button v-for="slice in processCompositions.get(gpu.id).slices" :key="slice.pid ?? 'other'" type="button" class="vram-legend-row"
+                  @pointerenter="openProcessTooltip($event, `${gpu.id}:legend:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
+                  @pointerleave="closeTooltip(`${gpu.id}:legend:${slice.pid ?? 'other'}`)"
+                  @focus="openProcessTooltip($event, `${gpu.id}:legend:${slice.pid ?? 'other'}`, slice, '进程读数合计')"
+                  @blur="closeTooltip(`${gpu.id}:legend:${slice.pid ?? 'other'}`)">
                   <i :style="{ background: slice.color }"></i>
                   <span :title="slice.pid == null ? slice.name : `${slice.name} · PID ${slice.pid}`">{{ slice.name }}<small v-if="slice.pid != null"> · {{ slice.pid }}</small></span>
                   <strong>{{ bytes(slice.value) }}</strong>
@@ -346,14 +362,14 @@ function displayLabel(display) {
         <p class="data-note">进程本地用量与专用计数均可能包含跨进程共享资源，不能相加。专用计数不是进程独占 VRAM；核显未并入 NVIDIA 列表。</p>
       </section>
       </div>
-      <div v-if="tooltip" class="vram-tooltip" role="tooltip" :style="{ left: `${tooltip.left}px`, top: `${tooltip.top}px` }">
-        <div class="vram-tooltip-head"><i :style="{ background: tooltip.color }"></i><strong>{{ tooltip.name }}</strong></div>
-        <small>{{ tooltip.subtitle }}</small>
-        <div class="vram-tooltip-reading"><strong>{{ tooltip.value }}</strong><span>{{ tooltip.share }}</span></div>
-        <p>{{ tooltip.note }}</p>
-        <div v-if="tooltip.members?.length" class="vram-tooltip-members">
-          <div v-for="member in tooltip.members" :key="member.pid"><span>{{ member.name }} · {{ member.pid }}</span><strong>{{ bytes(member.value) }}</strong></div>
-          <small v-if="tooltip.remainingMembers">另有 {{ tooltip.remainingMembers }} 个进程</small>
+      <div v-if="tooltipDetail" class="vram-tooltip" role="tooltip" :style="{ left: `${tooltipDetail.left}px`, top: `${tooltipDetail.top}px` }">
+        <div class="vram-tooltip-head"><i :style="{ background: tooltipDetail.color }"></i><strong>{{ tooltipDetail.name }}</strong></div>
+        <small>{{ tooltipDetail.subtitle }}</small>
+        <div class="vram-tooltip-reading"><strong>{{ tooltipDetail.value }}</strong><span>{{ tooltipDetail.share }}</span></div>
+        <p>{{ tooltipDetail.note }}</p>
+        <div v-if="tooltipDetail.members?.length" class="vram-tooltip-members">
+          <div v-for="member in tooltipDetail.members" :key="member.pid"><span>{{ member.name }} · {{ member.pid }}</span><strong>{{ bytes(member.value) }}</strong></div>
+          <small v-if="tooltipDetail.remainingMembers">另有 {{ tooltipDetail.remainingMembers }} 个进程</small>
         </div>
       </div>
     </template>

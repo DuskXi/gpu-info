@@ -25,7 +25,7 @@ pnpm dev
 
 ## 数据流
 
-`GPUMonitor.capture()` 每次生成一个完整硬件采样。单线程采样器将其交给 `TelemetryStore`，后者加上时间戳和递增序号，保留最近 120 帧，并向 HTTP 与 WebSocket 发布同一格式的消息：
+`GPUMonitor.capture()` 每次生成一个完整硬件采样。单线程采样器将其交给 `TelemetryStore`，后者加上时间戳和递增序号，保留最近 120 帧，并向历史接口与 WebSocket 发布同一格式的消息：
 
 ```json
 {
@@ -45,19 +45,20 @@ pnpm dev
 }
 ```
 
-前端 `TelemetryClient` 将历史接口和 WebSocket 消息统一送入 `ingest()`，按流标识和序号去重。服务端重启后切换到新流；断线保留旧帧但显示连接状态。采样缺失不会复制上一帧冒充新数据。
+前端 `TelemetryClient` 将历史接口和 WebSocket 消息统一送入 `ingest()`，按流标识和序号去重。服务端重启后切换到新流；断线保留旧帧但显示连接状态。采样缺失不会复制上一帧冒充新数据。状态 HTTP 接口在这份原始快照上增加请求时计算的 `health`，包括整帧、Windows 进程计数和显示配置的新鲜度。
 
 | 接口 | 用途 |
 | --- | --- |
-| `GET /api/status` | 最新快照；首次采样前返回 503 |
+| `GET /api/status` | 最新快照及 `health`；首次采样前返回 503 |
 | `GET /status.json` | 根路径的完整最新快照；与 `/api/status` 内容相同 |
 | `GET /status.md` | 根路径的人类可读状态摘要，`text/markdown` |
-| `GET /metrics` | 根路径的 Prometheus 文本指标，`text/plain; version=0.0.4` |
+| `GET /metrics` | 根路径的 Prometheus 文本指标；默认只输出系统和设备指标 |
+| `GET /metrics?include_processes=true` | 另外输出带 GPU、PID、进程名标签的逐进程指标 |
 | `GET /api/history?limit=120` | 最近 1–120 帧，按时间升序 |
 | `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
 
-三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。`/metrics` 使用 `gpu_info_` 前缀，缺失计数器不输出样本；进程指标带 GPU、PID 和进程名标签。Prometheus 可配置 `metrics_path: /metrics` 抓取。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
+三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。整帧超过 5 秒未更新时，状态接口明确标记过期，`/metrics` 将 `gpu_info_up` 置 0 并停止输出旧的硬件读数；Windows 进程计数超过 30 秒时停止输出旧的逐进程读数。Prometheus 可通过时间戳指标计算样本年龄。指标使用 `gpu_info_` 前缀、字节／赫兹等基础单位和 0–1 比率；缺失计数器不输出样本。逐进程序列会随 PID 更替而增长，只有确实需要长期抓取时才启用。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
 
 ## 统计口径
 
