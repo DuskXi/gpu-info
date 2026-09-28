@@ -1,5 +1,7 @@
 # 监控工具开销实测（2026-09-27）
 
+后续发现见 [NVIDIA 训练 API 探索（2026-09-29）](nvidia-training-apis.md)：直接 CUPTI PM Sampling 已验证每秒解码、L1/L2 和 Tensor 指令速率，包含显存观测与接口边界。
+
 测试机器：Windows、RTX 4090（24 GB）。测试期间另有持续运行的 Python GPU 工作负载；没有暂停用户进程。采样脚本 [`overhead_probe.py`](overhead_probe.py) 每 0.5 秒读取 NVML，并从现有 `/api/status` 读取 Windows 进程本地显存计数。原始 JSON 保留在本机 `results/`，不纳入 Git。测试生成的多 GB ETL 已清理。
 
 | 场景 | 工具进程本地显存峰值 | 其他实测开销 |
