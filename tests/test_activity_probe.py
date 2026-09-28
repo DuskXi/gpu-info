@@ -4,11 +4,17 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 
-from activity_probe import parse_metrics, report_window
+from activity_probe import ActivityProbe, ProbeError, parse_metrics, report_window
 from main import TelemetryFrame, TelemetryStore
 
 
 class ActivityProbeTests(unittest.TestCase):
+    def test_capture_duration_is_bounded_before_starting_profiler(self):
+        with self.assertRaises(ProbeError):
+            ActivityProbe().capture(0, duration_seconds=0)
+        with self.assertRaises(ProbeError):
+            ActivityProbe().capture(0, duration_seconds=6)
+
     def test_report_uses_metric_names_and_retains_real_zero_samples(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sample.sqlite"

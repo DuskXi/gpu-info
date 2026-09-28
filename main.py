@@ -114,8 +114,12 @@ class TelemetryStore:
     def recent(self, limit: int) -> list[dict[str, Any]]:
         return [frame.as_message() for frame in list(self.history)[-limit:]]
 
-    async def capture_activity(self, gpu_id: int, kind: str = "general") -> dict[str, Any]:
-        result = await asyncio.to_thread(self.activity_probe.capture, gpu_id, kind)
+    async def capture_activity(
+        self, gpu_id: int, kind: str = "general", duration_seconds: int = 5
+    ) -> dict[str, Any]:
+        result = await asyncio.to_thread(
+            self.activity_probe.capture, gpu_id, kind, duration_seconds
+        )
         result["process_context"] = self._activity_process_context(result)
         if kind == "pipelines":
             self.latest_pipeline_activity = result
@@ -276,13 +280,15 @@ async def history(limit: int = Query(default=120, ge=1, le=120)) -> list[dict[st
 
 @app.post("/api/activity-probe")
 async def activity_probe(
-    gpu: int = Query(ge=0), kind: Literal["general", "pipelines"] = "general"
+    gpu: int = Query(ge=0),
+    kind: Literal["general", "pipelines"] = "general",
+    duration: int = Query(default=5, ge=1, le=5),
 ) -> dict[str, Any]:
     frame = latest_frame()
     if not any(row["id"] == gpu for row in frame.payload.get("gpus", [])):
         raise HTTPException(status_code=404, detail="GPU not found")
     try:
-        return await store.capture_activity(gpu, kind)
+        return await store.capture_activity(gpu, kind, duration)
     except ProbeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

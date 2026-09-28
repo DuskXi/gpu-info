@@ -264,7 +264,7 @@ function displayLabel(display) {
                     <div class="gpu-activity-track"><i :style="{ width: `${Math.max(0, Math.min(100, activityProbe.metrics?.[metric.key]?.mean_percent ?? 0))}%` }"></i></div>
                   </div>
                 </div>
-                <p>上次采样 <RollingValue :value="time(activityProbe.captured_at)" :amount="activityProbe.captured_at" /> · 窗口平均值，非实时读数。持续模式每轮采集 5 秒，完成后休息至少 45 秒。<router-link to="/detail">查看全部细分 ↗</router-link></p>
+                <p>上次采样 <RollingValue :value="time(activityProbe.captured_at)" :amount="activityProbe.captured_at" /> · {{ activityProbe.rolling ? `最近 ${activityProbe.rolling.windows} 轮滚动均值` : '本轮平均值' }}，非实时读数。持续模式每轮采集 2 秒，完成后休息至少 15 秒。<router-link to="/detail">查看全部细分 ↗</router-link></p>
               </template>
                 <p v-else class="gpu-activity-empty">这张卡尚无硬件活动采样。</p>
                 <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
@@ -276,7 +276,7 @@ function displayLabel(display) {
                       <div class="gpu-activity-track"><i :style="{ width: `${Math.max(0, Math.min(100, pipelineProbe.metrics?.[metric.key]?.mean_percent ?? 0))}%` }"></i></div>
                     </div>
                   </div>
-                  <p>SM 管线 {{ time(pipelineProbe.captured_at) }} 的窗口平均。各管线占用率不能相加；仅 AD10x 可采集。</p>
+                  <p>SM 管线 {{ time(pipelineProbe.captured_at) }} 的{{ pipelineProbe.rolling ? `最近 ${pipelineProbe.rolling.windows} 轮滚动均值` : '本轮平均值' }}。轮间未采样；各管线占用率不能相加；仅 AD10x 可采集。</p>
                 </template>
             </section>
             <div v-if="processCompositions.get(gpu.id)?.slices.length" class="vram-composition">

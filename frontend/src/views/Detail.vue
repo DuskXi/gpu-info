@@ -272,7 +272,7 @@ function chooseProcess(key) {
 
     <section class="activity-probe section-block" aria-labelledby="activity-heading">
       <div class="section-heading">
-        <div><p class="eyebrow">ON DEMAND / HARDWARE COUNTERS</p><h2 id="activity-heading">计算单元活动</h2></div>
+        <div><p class="eyebrow">SHORT WINDOWS / HARDWARE COUNTERS</p><h2 id="activity-heading">计算单元活动</h2></div>
         <div class="activity-probe-controls">
           <label for="probe-gpu">采样设备</label>
           <select id="probe-gpu" v-model="probeGpu" :disabled="probeBusy || autoEnabled">
@@ -288,14 +288,14 @@ function chooseProcess(key) {
       </div>
       <details ref="probeDetails" class="activity-probe-details">
         <summary>查看设备级采样细节 <span v-if="activityProbe">SM {{ number(activityProbe.metrics?.sm_active?.mean_percent, 1, '%') }} · Tensor {{ number(activityProbe.metrics?.tensor_active?.mean_percent, 1, '%') }}</span><span v-if="pipelineProbe">ALU {{ number(pipelineProbe.metrics?.alu?.mean_percent, 1, '%') }} · FMA Heavy {{ number(pipelineProbe.metrics?.fma_heavy?.mean_percent, 1, '%') }}</span><span v-if="probeError || pipelineError">采样失败 · 展开查看</span></summary>
-      <p class="activity-probe-intro">两种持续模式互斥，每轮采集整卡 5 秒：概况 100 Hz、SM 管线 10 Hz，完成后休息至少 45 秒。关掉开关后，正在进行的一轮仍会完成。探针不会把其他程序的活动归给选中的训练进程。</p>
+      <p class="activity-probe-intro">两种持续模式互斥，每轮采集整卡 2 秒：概况 100 Hz、SM 管线 10 Hz，完成后休息至少 15 秒。最近 3 轮按采样数计算滚动均值，轮间未采样。关掉开关后，正在进行的一轮仍会完成。</p>
       <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
       <div v-if="activityProbe" class="activity-grid activity-grid-detailed">
         <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
           <small class="activity-reading-group">{{ metric.group }}</small>
           <span>{{ metric.label }}</span>
           <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
-          <small>窗口平均 <template v-if="activityProbe.metrics?.[metric.key]?.p90_percent !== undefined">· P90 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.p90_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.p90_percent" /> </template>· 峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
+          <small>{{ activityProbe.rolling ? '滚动均值' : '窗口平均' }} <template v-if="activityProbe.metrics?.[metric.key]?.p90_percent !== undefined">· 本轮 P90 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.p90_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.p90_percent" /> </template>· 本轮峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
           <small>有活动的采样 <RollingValue :value="activityProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="activityProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
         </article>
       </div>
@@ -306,8 +306,8 @@ function chooseProcess(key) {
           <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
         </div>
       </div>
-      <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
-      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}P90 表示 90% 样本不超过该值；峰值仍是单个采样间隔的读数，不是瞬时峰值。不同百分比不能相加，也不能换算为实际 TFLOPS。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
+      <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">概况尚无采样。</p>
+      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}{{ activityProbe?.rolling ? `均值汇总最近 ${activityProbe.rolling.windows} 轮、有效窗口约 ${activityProbe.rolling.sampled_seconds} 秒；轮间没有观测。` : '' }}P90、峰值和有活动的采样数只描述最新一轮。不同百分比不能相加，也不能换算为实际 TFLOPS。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。探针不会把其他程序的活动归给训练进程。</p>
       <div class="pipeline-probe">
         <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>短时持续采样 · GPU 整卡</span></div>
         <p class="activity-probe-intro">从实际执行的指令管线观察 Tensor、FMA、ALU 和 SFU/XU。FMA 也可执行部分整数乘法，XU 也处理类型转换；这些值不是精确的 FP32 核心利用率。各管线峰值基准不同，百分比不能相加。</p>
@@ -317,7 +317,7 @@ function chooseProcess(key) {
             <small class="activity-reading-group">{{ metric.group }}</small>
             <span>{{ metric.label }}</span>
             <strong><RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.mean_percent" /></strong>
-            <small>窗口平均 · 峰值 <RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.peak_percent" /></small>
+            <small>{{ pipelineProbe.rolling ? '滚动均值' : '窗口平均' }} · 本轮峰值 <RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.peak_percent" /></small>
             <small>有活动的采样 <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
           </article>
         </div>
@@ -328,8 +328,8 @@ function chooseProcess(key) {
             <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
           </div>
         </div>
-        <p v-if="!pipelineProbe && !probeBusy" class="activity-probe-empty">尚无 SM 管线采样。使用上方“采集 SM 管线”按钮，支持 AD10x（RTX 40 系列）设备。</p>
-        <p v-if="pipelineProbe" class="data-note">GPU {{ pipelineProbe.gpu_id }} · {{ new Date(pipelineProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) }}。这是另一段 5 秒、10 Hz 的粗粒度窗口，不能和上面的常规采样逐点对齐。当前计数器不提供进程归属；训练进程的 SM 负载可作同期线索，不能把整卡 FMA 或 Tensor 值直接分配给它。指令条数在本机导出时曾溢出，故仅展示管线吞吐率。</p>
+        <p v-if="!pipelineProbe && !probeBusy" class="activity-probe-empty">尚无 SM 管线采样。使用上方“持续采样管线”开关，支持 AD10x（RTX 40 系列）设备。</p>
+        <p v-if="pipelineProbe" class="data-note">GPU {{ pipelineProbe.gpu_id }} · {{ new Date(pipelineProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) }}。{{ pipelineProbe.rolling ? `均值汇总最近 ${pipelineProbe.rolling.windows} 轮、有效窗口约 ${pipelineProbe.rolling.sampled_seconds} 秒；轮间没有观测。` : `最新一轮 ${pipelineProbe.duration_seconds} 秒、10 Hz 的粗粒度窗口。` }}峰值和有活动的采样数只描述最新一轮。当前计数器不提供进程归属；训练进程的 SM 负载可作同期线索，不能把整卡 FMA 或 Tensor 值直接分配给它。指令条数在本机导出时曾溢出，故仅展示管线吞吐率。</p>
       </div>
       </details>
     </section>

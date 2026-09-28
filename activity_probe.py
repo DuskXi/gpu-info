@@ -127,9 +127,11 @@ class ActivityProbe:
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
-    def capture(self, gpu_id: int, kind: str = "general") -> dict[str, Any]:
+    def capture(self, gpu_id: int, kind: str = "general", duration_seconds: int = 5) -> dict[str, Any]:
         if kind not in ("general", "pipelines"):
             raise ProbeError("未知硬件采样类型")
+        if duration_seconds < 1 or duration_seconds > 5:
+            raise ProbeError("硬件采样时长必须为 1–5 秒")
         if not self._lock.acquire(blocking=False):
             raise ProbeError("硬件探针正在采样，请等待本次结果")
         try:
@@ -146,7 +148,8 @@ class ActivityProbe:
                 command = [
                     str(nsys), "profile", "--trace=none", "--sample=none",
                     "--cpuctxsw=none", f"--gpu-metrics-device={gpu_id}",
-                    f"--gpu-metrics-frequency={frequency_hz}", "--duration=5",
+                    f"--gpu-metrics-frequency={frequency_hz}",
+                    f"--duration={duration_seconds}",
                     f"--output={base}",
                 ]
                 if kind == "pipelines":
@@ -164,7 +167,7 @@ class ActivityProbe:
                 raise ProbeError("本次报告没有可用的 GPU 硬件指标；管线采样仅支持 AD10x 设备")
             return {
                 "gpu_id": gpu_id, "kind": kind, "captured_at": time.time(),
-                "duration_seconds": 5, "frequency_hz": frequency_hz,
+                "duration_seconds": duration_seconds, "frequency_hz": frequency_hz,
                 "scope": "device", "source": "Nsight Systems GPU Metrics",
                 "metrics": metrics,
                 "window_started_at": window[0] if window else None,
