@@ -86,7 +86,7 @@ class ProcessAccountingTests(unittest.TestCase):
                 ]
 
         collector._wmi = FakeWmi()
-        collector._read_engine_load = lambda _map: {(0, 42): 23}
+        collector._read_engine_load = lambda _map: {(0, 42): {"3d": 23}}
         result = collector._query_windows_processes(
             collector._names, {0: "NVIDIA"}
         )
@@ -99,6 +99,7 @@ class ProcessAccountingTests(unittest.TestCase):
         self.assertEqual(result.processes[0]["committed_memory"], 55)
         self.assertEqual(result.processes[0]["nonlocal_memory"], 10)
         self.assertEqual(result.processes[0]["gpu_percent"], 23)
+        self.assertEqual(result.processes[0]["engine_utilization"], {"3d": 23})
         self.assertEqual(result.adapters, [{
             "gpu_id": 0, "dedicated_usage": 750, "shared_usage": 25,
         }])
@@ -119,7 +120,7 @@ class ProcessAccountingTests(unittest.TestCase):
             if "GPU Adapter Memory" in path:
                 return {adapter_name: 700 if path.endswith("Dedicated Usage") else 10}
             if "GPU Engine" in path:
-                return {process_name + "_eng_0": 0.5}
+                return {process_name + "_eng_0_engtype_3D": 0.5}
             readings = {
                 "Local Usage": 40,
                 "Dedicated Usage": 100,
@@ -156,6 +157,10 @@ class ProcessAccountingTests(unittest.TestCase):
             next(row for row in second.processes if row["pid"] == 3200)["gpu_percent"],
             0.5,
         )
+        self.assertEqual(
+            next(row for row in second.processes if row["pid"] == 3200)["engine_utilization"],
+            {"3d": 0.5},
+        )
         self.assertEqual(calls, {"opened": 1, "added": 8, "collected": 2, "closed": 1})
 
     def test_engine_rates_use_only_matched_nvidia_luid(self):
@@ -164,9 +169,9 @@ class ProcessAccountingTests(unittest.TestCase):
         paths = [
             rf"\GPU Engine(pid_{pid}_luid_{luid}_phys_0_eng_{engine})\Utilization Percentage"
             for pid, luid, engine in [
-                (42, "0x00000000_0x000196BD", 0),
-                (42, "0x00000000_0x000196BD", 1),
-                (43, "0x00000000_0x0001D7FB", 0),
+                (42, "0x00000000_0x000196BD", "0_engtype_3D"),
+                (42, "0x00000000_0x000196BD", "1_engtype_Copy"),
+                (43, "0x00000000_0x0001D7FB", "0_engtype_3D"),
             ]
         ]
         fake_pdh = SimpleNamespace(
@@ -184,7 +189,7 @@ class ProcessAccountingTests(unittest.TestCase):
             "monitor.time.sleep"
         ):
             rates = collector._read_engine_load({nvidia: 0})
-        self.assertEqual(rates, {(0, 42): 23.0})
+        self.assertEqual(rates, {(0, 42): {"3d": 23.0, "copy": 7.0}})
 
     def test_process_rates_are_sampled_and_reset_after_pid_reuse(self):
         collector = GPUMonitor.__new__(GPUMonitor)

@@ -210,6 +210,7 @@ _METRICS = {
     "gpu_info_process_nvml_memory_bytes": "NVML process memory reading in bytes when Windows local usage is unavailable.",
     "gpu_info_process_cpu_ratio": "Process CPU use as a ratio of the whole host.",
     "gpu_info_process_gpu_ratio": "Process GPU utilization ratio, from Windows engines or NVML SM.",
+    "gpu_info_process_windows_engine_ratio": "Busiest WDDM engine per process and engine type; engine types are not CUDA, RT or Tensor core utilization.",
     "gpu_info_process_disk_io_bytes_per_second": "Process read plus write disk I/O rate in bytes per second.",
     "gpu_info_process_sm_utilization_ratio": "NVML process SM utilization ratio.",
     "gpu_info_process_memory_utilization_ratio": "NVML process memory utilization ratio.",
@@ -312,6 +313,10 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
             add(metric, process.get(key), label)
         add("gpu_info_process_cpu_ratio", ratio(process.get("cpu_percent")), label)
         add("gpu_info_process_gpu_ratio", ratio(process.get("gpu_percent")), label)
+        for engine_type, utilization in (process.get("engine_utilization") or {}).items():
+            add("gpu_info_process_windows_engine_ratio", ratio(utilization), {
+                **label, "engine_type": engine_type,
+            })
         if process.get("memory_source") == "NVML" and _value(process.get("local_memory")) is None:
             add("gpu_info_process_nvml_memory_bytes", process.get("used_memory"), label)
 

@@ -40,6 +40,21 @@ def _counter_identity(name: str) -> tuple[int, str] | None:
     return int(match.group(1)), f"{match.group(2)}_{match.group(3)}".upper()
 
 
+def _engine_type(name: str) -> str:
+    """Keep the WDDM engine label, which is not a CUDA/RT/Tensor unit label."""
+    match = re.search(r"_engtype_([a-z0-9_]+)", name, re.IGNORECASE)
+    return match.group(1).lower() if match else "unknown"
+
+
+def _record_engine_load(
+    loads: dict[tuple[int, int], dict[str, float]],
+    key: tuple[int, int], name: str, usage: float,
+) -> None:
+    kind = _engine_type(name)
+    by_type = loads.setdefault(key, {})
+    by_type[kind] = max(by_type.get(kind, 0.0), min(100.0, max(0.0, usage)))
+
+
 class _ProcessSample(NamedTuple):
     created_at: float
     sampled_at: float
@@ -390,6 +405,7 @@ class GPUMonitor:
                 if existing[key]["memory_source"] != "NVML":
                     existing[key]["memory_source"] = process["memory_source"]
                 existing[key]["gpu_percent"] = process["gpu_percent"]
+                existing[key]["engine_utilization"] = process.get("engine_utilization")
             else:
                 result["processes"].append(dict(process))
         result["processes_sampled_at"] = self._wmi_sampled_at
@@ -455,7 +471,8 @@ class GPUMonitor:
                     "claimed_memory": 0, "committed_memory": None,
                     "nonlocal_memory": None, "shared_memory": 0,
                     "memory_source": "Windows GPU counters",
-                    "gpu_percent": engine_load.get(key),
+                    "gpu_percent": max(engine_load.get(key, {}).values(), default=None),
+                    "engine_utilization": engine_load.get(key) or None,
                 }
             if local is not None:
                 grouped[key]["local_memory"] = (grouped[key]["local_memory"] or 0) + local
@@ -473,7 +490,7 @@ class GPUMonitor:
 
     def _read_wmi_snapshot(
         self, luid_map: dict[str, int]
-    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], float]]:
+    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], dict[str, float]]]:
         try:
             if self._wmi is None:
                 import pythoncom
@@ -490,7 +507,7 @@ class GPUMonitor:
 
     def _read_pdh_snapshot(
         self, luid_map: dict[str, int]
-    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], float]]:
+    ) -> tuple[list[Any], list[Any], dict[tuple[int, int], dict[str, float]]]:
         import win32pdh
 
         if self._pdh_query is None:
@@ -549,7 +566,7 @@ class GPUMonitor:
             )
             for name in adapter_dedicated.keys() | adapter_shared.keys()
         ]
-        engine_load: dict[tuple[int, int], float] = {}
+        engine_load: dict[tuple[int, int], dict[str, float]] = {}
         for name, usage in values("engine", win32pdh.PDH_FMT_DOUBLE).items():
             identity = _counter_identity(name)
             if identity is None or not isinstance(usage, (int, float)) or not math.isfinite(usage):
@@ -557,13 +574,12 @@ class GPUMonitor:
             pid, luid = identity
             gpu_id = luid_map.get(luid)
             if gpu_id is not None:
-                key = (gpu_id, pid)
-                engine_load[key] = max(
-                    engine_load.get(key, 0.0), min(100.0, max(0.0, float(usage)))
-                )
+                _record_engine_load(engine_load, (gpu_id, pid), name, float(usage))
         return processes, adapters, engine_load
 
-    def _read_engine_load(self, luid_map: dict[str, int]) -> dict[tuple[int, int], float]:
+    def _read_engine_load(
+        self, luid_map: dict[str, int]
+    ) -> dict[tuple[int, int], dict[str, float]]:
         """Batch-sample PDH engine rates without per-instance WMI COM reads."""
         try:
             import win32pdh
@@ -572,7 +588,7 @@ class GPUMonitor:
         except Exception as exc:
             logger.debug("GPU Engine counters unavailable: %s", exc)
             return {}
-        handles: list[tuple[Any, tuple[int, int]]] = []
+        handles: list[tuple[Any, tuple[int, int], str]] = []
         try:
             for luid in luid_map:
                 path = (
@@ -591,14 +607,14 @@ class GPUMonitor:
                         continue
                     handle = self._read(lambda: win32pdh.AddCounter(query, expanded))
                     if handle is not None:
-                        handles.append((handle, (gpu_id, pid)))
+                        handles.append((handle, (gpu_id, pid), expanded))
             if not handles:
                 return {}
             win32pdh.CollectQueryData(query)
             time.sleep(0.5)
             win32pdh.CollectQueryData(query)
-            engine_load: dict[tuple[int, int], float] = {}
-            for handle, key in handles:
+            engine_load: dict[tuple[int, int], dict[str, float]] = {}
+            for handle, key, name in handles:
                 reading = self._read(
                     lambda: win32pdh.GetFormattedCounterValue(
                         handle, win32pdh.PDH_FMT_DOUBLE
@@ -609,9 +625,7 @@ class GPUMonitor:
                 usage = reading[1]
                 if not isinstance(usage, (float, int)) or not math.isfinite(usage):
                     continue
-                engine_load[key] = max(
-                    engine_load.get(key, 0.0), min(100.0, max(0.0, float(usage)))
-                )
+                _record_engine_load(engine_load, key, name, float(usage))
             return engine_load
         except Exception as exc:
             logger.debug("GPU Engine counter sampling failed: %s", exc)

@@ -71,6 +71,8 @@ pnpm dev
 - GPU 设备指标约每秒采样，Windows 进程计数器在独立工作线程中异步刷新，查询间隔至少两秒；`processes_sampled_at` 标明最近一次进程采样时间。
 - 趋势页的进程选择器可以按进程名或 PID 搜索，并按本地显存、CPU、磁盘 I/O、GPU 占用排序。进程 CPU 是进程 CPU 时间增量除以逻辑处理器数后的整机百分比；磁盘 I/O 是进程实际读取与写入字节数的每秒速率，首次采样显示缺失值。
 - Windows 进程 GPU 占用取对应 NVIDIA 设备最忙引擎的性能计数器值；不可用时采用 NVML 的进程 SM 负载。缺失值显示为 `—`，不会当作 0 排序。
+- 每个进程同时保留 Windows `GPU Engine` 的 `engtype` 分类到 `engine_utilization`；同类多个实例取最忙值，并在最近 120 帧、`/status.json`、趋势页和带进程标签的 `/metrics` 中提供。这里的 3D、Compute、Copy 是 WDDM 引擎分类，不等于 CUDA、RT Core 或 Tensor Core 的硬件使用率；未提供的分类保持缺失。
+- `gpus[].power.usage` 是 NVML 读取的整卡功率。功率并未拆分到进程或核心单元；各类引擎可能同时使用同一硬件，不能按百分比分摊瓦数。后续若建立模型，必须用独立负载校准，并把估算值、误差及无法归因部分与实测整卡功率分开显示。
 - 不把 Windows 共享 GPU 内存或核显显存并入 NVIDIA 专用显存。进程合计不一定等于设备总占用。
 - 监视器不调用 CUDA Runtime 的 `cudaSetDevice` / `cudaMemGetInfo`。Windows 的 CUDA Driver 查询只读取设备标识，不创建 CUDA 上下文。
 - 不可用的可选计数器返回 `null`，趋势图将其显示为缺口。

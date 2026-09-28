@@ -37,6 +37,9 @@ const processMetrics = [
   { key: 'committed_memory', label: 'Windows 提交量', group: '内存', unit: 'MB', read: (p) => p?.committed_memory == null ? null : p.committed_memory / 1048576 },
   { key: 'sm_util', label: 'SM 负载', group: '负载', unit: '%', read: (_, u) => u?.sm_util },
   { key: 'mem_util', label: '显存控制器', group: '负载', unit: '%', read: (_, u) => u?.mem_util },
+  { key: 'wddm_3d', label: 'WDDM 3D 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.['3d'] },
+  { key: 'wddm_compute', label: 'WDDM Compute 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.compute },
+  { key: 'wddm_copy', label: 'WDDM Copy 引擎', group: '引擎', unit: '%', read: p => p?.engine_utilization?.copy },
   { key: 'enc_util', label: '编码器', group: '引擎', unit: '%', read: (_, u) => u?.enc_util },
   { key: 'dec_util', label: '解码器', group: '引擎', unit: '%', read: (_, u) => u?.dec_util },
 ]
@@ -211,7 +214,7 @@ function chooseProcess(key) {
         <template v-else>
           <div class="chart-frame"><Line :data="chartData" :options="chartOptions" /></div>
         </template>
-        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? '进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
+        <p class="data-note">曲线来自服务端最近 120 帧历史。进程退出后的采样保留为空白。{{ mode === 'process' ? 'WDDM 引擎分类约每两秒刷新；3D、Compute 和 Copy 取同类最忙引擎，Compute 不等于 CUDA，三者均不能推算 RT 或 Tensor Core 占用。进程本地用量可包含共享资源；专用计数和提交量均不等于独占 VRAM。' : '' }}</p>
       </section>
 
       <aside class="trend-side" aria-label="当前读数">

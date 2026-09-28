@@ -77,6 +77,7 @@ class ExportEndpointTests(unittest.TestCase):
             "processes": [{"gpu_id": 0, "pid": 42, "name": 'render"\\worker|x',
                            "local_memory": 80, "claimed_memory": 900, "cpu_percent": 5,
                            "gpu_percent": None, "disk_bytes_per_sec": 1024,
+                           "engine_utilization": {"3d": 25, "copy": 0},
                            "memory_source": "Windows GPU counters"}],
             "process_utilization": [], "windows_adapter_memory": [],
             "display_state": {"count": 1, "displays": []},
@@ -98,6 +99,7 @@ class ExportEndpointTests(unittest.TestCase):
             {key: value for key, value in old_response.json().items() if key != "health"},
         )
         self.assertEqual(json_response.json()["sequence"], 7)
+        self.assertEqual(json_response.json()["processes"][0]["engine_utilization"]["3d"], 25)
         self.assertTrue(json_response.json()["health"]["snapshot_fresh"])
         self.assertTrue(json_response.json()["health"]["process_fresh"])
         self.assertEqual(json_response.headers["cache-control"], "no-store")
@@ -116,6 +118,8 @@ class ExportEndpointTests(unittest.TestCase):
         self.assertIn('name="render\\"\\\\worker|x"', process_metrics.text)
         self.assertNotIn("gpu_info_gpu_memory_controller_utilization_ratio{", metrics.text)
         self.assertNotIn("gpu_info_process_gpu_ratio{", process_metrics.text)
+        self.assertNotIn("gpu_info_process_windows_engine_ratio{", metrics.text)
+        self.assertIn('engine_type="3d"} 0.25', process_metrics.text)
         self.assertIn("gpu_info_display_count 1", metrics.text)
 
     def test_stale_frames_and_process_counters_are_marked_and_not_reexported(self):
