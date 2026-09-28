@@ -16,6 +16,7 @@ from typing import Any, Callable, NamedTuple
 import psutil
 
 from display_state import read_display_state
+from training_health import TrainingHealth
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +72,7 @@ class GPUMonitor:
     def __init__(self) -> None:
         self.nvml: Any = None
         self._static: dict[int, dict[str, Any]] = {}
+        self._training_health = TrainingHealth()
         self._names: dict[int, str] = {}
         self._names_at = 0.0
         self._util_since: dict[int, int] = {}
@@ -139,7 +141,11 @@ class GPUMonitor:
         if index not in self._static:
             nv = self.nvml
             capability = self._read(lambda: nv.nvmlDeviceGetCudaComputeCapability(handle))
+            pci = self._read(lambda: nv.nvmlDeviceGetPciInfo(handle).busId)
+            if isinstance(pci, bytes):
+                pci = pci.decode()
             self._static[index] = {
+                "pci_bus_id": pci,
                 "uuid": self._read(lambda: nv.nvmlDeviceGetUUID(handle), ""),
                 "architecture": self._read(lambda: str(nv.nvmlDeviceGetArchitecture(handle)), ""),
                 "compute_capability": ".".join(map(str, capability)) if capability else "",
@@ -240,6 +246,7 @@ class GPUMonitor:
                         lambda: f"P{nv.nvmlDeviceGetPerformanceState(handle)}"
                     ),
                     "device_info": self._static_info(index, handle),
+                    "training_health": self._training_health.capture(nv, handle, index),
                 })
                 self._capture_processes(result, index, handle, name, total, names)
                 self._capture_utilization(result, index, handle, names)

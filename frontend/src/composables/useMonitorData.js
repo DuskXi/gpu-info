@@ -102,6 +102,7 @@ export function useMonitorData() {
   return {
     snapshot: client.current,
     history: client.history,
+    now: client.now,
     isConnected: client.connected,
     isStale: client.stale,
   }

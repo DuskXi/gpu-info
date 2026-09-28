@@ -37,6 +37,7 @@ pnpm dev
   "gpus": [],
   "processes": [],
   "process_utilization": [],
+  "hardware_sampling": {},
   "windows_adapter_memory": [],
   "display_state": null,
   "display_events": [],
@@ -58,12 +59,13 @@ pnpm dev
 | `POST /api/activity-probe?gpu=0[&duration=2]` | 采集 1–5 秒设备级 GPU 硬件活动（默认 5 秒）；需要本机 Nsight Systems CLI 和性能计数器权限 |
 | `POST /api/activity-probe?gpu=0&kind=pipelines` | 采集 AD10x 的 Tensor、FMA Light/Heavy、ALU、SFU 管线吞吐 |
 | `GET /api/activity-probe[?kind=pipelines]` | 最近一次对应类型的采样结果；服务端重启后清空 |
+| `POST /api/hardware-sampling?enabled=true&gpu=0&mode=all` | 开启设备级 CUPTI 连续采样；mode 可为 all/activity/cache/pipelines/tensor/scalar |
+| `POST /api/hardware-sampling?enabled=false` | 停止共享的连续采样，释放性能计数器 |
 | `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
 
 三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。整帧超过 5 秒未更新时，状态接口明确标记过期，`/metrics` 将 `gpu_info_up` 置 0 并停止输出旧的硬件读数；Windows 进程计数超过 30 秒时停止输出旧的逐进程读数。Prometheus 可通过时间戳指标计算样本年龄。指标使用 `gpu_info_` 前缀、字节／赫兹等基础单位和 0–1 比率；缺失计数器不输出样本。逐进程序列会随 PID 更替而增长，只有确实需要长期抓取时才启用。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
 
-首页和细分页的“持续采样”开关共用状态：概况与 SM 管线两种模式互斥，开启后立即采集一轮 2 秒的整卡活动（概况 100 Hz，SM 管线 10 Hz），完成后休息至少 15 秒再采下一轮；关闭后不再启动新一轮，已经开始的一轮会完成。前端对最近 3 轮按样本数计算滚动均值，P90、峰值和有活动样本数仍只描述最新一轮。轮间未采样，页面不会插值或假装每秒都有新数据；结果更新速度受 Nsight 结束采集和导出报告的时间限制。开关只在当前浏览器标签页有效。活动百分比和管线吞吐百分比不是浮点运算次数，不能据此计算真实 TFLOPS；要获得按精度和 kernel 区分的运算计数，需要在训练进程内统计或进行更重的逐 kernel profiling。
 
 ## 统计口径
 
@@ -78,11 +80,7 @@ pnpm dev
 - Windows 进程 GPU 占用取对应 NVIDIA 设备最忙引擎的性能计数器值；不可用时采用 NVML 的进程 SM 负载。缺失值显示为 `—`，不会当作 0 排序。
 - 每个进程同时保留 Windows `GPU Engine` 的 `engtype` 分类到 `engine_utilization`；同类多个实例取最忙值，并在最近 120 帧、`/status.json`、趋势页和带进程标签的 `/metrics` 中提供。这里的 3D、Compute、Copy 是 WDDM 队列分类，不等于 CUDA、RT Core 或 Tensor Core 的硬件使用率。本机训练中的 Python 进程约 87% SM 负载时，WDDM 将其约 89% 的活动记在名为 `3d` 的队列；因此 `compute` 缺失不代表 CUDA 空闲。
 - `gpus[].power.usage` 是 NVML 读取的整卡功率。功率并未拆分到进程或核心单元；各类引擎可能同时使用同一硬件，不能按百分比分摊瓦数。后续若建立模型，必须用独立负载校准，并把估算值、误差及无法归因部分与实测整卡功率分开显示。
-- 首页和趋势页共享最近一次按需 Nsight Systems 结果：以 100 Hz 仅采集 5 秒整卡 GPU Metrics，不采集 CUDA/WDDM API 或 CPU 轨迹。首页展示计算派发、计算 warp、SM 活跃、SM 指令发射、Tensor 活跃和显存读取；趋势页再展示异步派发、活跃 SM 未分配 warp 槽位、显存写入与图形 warp，以及窗口平均值、P90、峰值和非零样本数。峰值是单个约 10 毫秒采样间隔的读数，并非瞬时值。同一份默认 `ad10x` 报告已包含这些指标，增加显示无需增加采集计数器。采样时间与实时 NVML 帧分别标明。
-- 另有独立的 AD10x 指令管线短采样，10 Hz、5 秒，首页和趋势页可手动触发。它以 Nsight 配置中的实时计数器观察 Tensor、FMA Light/Heavy、ALU、SFU/XU；其采样窗口与概况采样分开。FMA Light/Heavy 不能直接解释为 FP32 CUDA Core 的独占使用率，也可包含整数乘法；ALU 主要反映整数/逻辑指令，XU 还包括类型转换。各管线百分比采用不同峰值基准，不能相加。该集合在本机 RTX 4090 成功单次采集，其他芯片是否可用由 Nsight 配置验证，失败会返回错误。指令条数在本机报告中出现有符号溢出，网页仅显示 10 Hz 粗粒度管线吞吐率，不显示不可信的条数。
-- GPU Metrics 属于整张 GPU，无法把 Tensor 或指令活动归给某个 PID；页面另列同期独立取得的进程 NVML SM 负载。计算派发和计算 warp 不能等同于 FP32/整数 CUDA Core 利用率，也可能包括图形 API 的计算着色器；Tensor 低并不能单独证明标量计算管线高。不同百分比不可相加，不能推算单元功率。可用 `GPU_INFO_NSYS_PATH` 指定 CLI 路径；缺少工具或计数器权限时返回明确错误。常驻采样不启动 Nsight。
 - 趋势页“进程指标”可切换为当前选中指标排名前 3/5/8 的进程曲线，并按 GPU 过滤；排名只使用最新有效值，缺失值不当成 0。不同进程使用不同颜色和带 PID 的图例。整卡硬件计数器不参与进程排名，因为它们没有进程归属。
-- 本机 Nsight Compute 2022.3 的 AD102 指标清单还包含 FP64、LSU、Tensor HMMA/IMMA、warp 停顿等更细计数器，这些尚未验证为低开销实时读数。将常规 FMA/ALU 指标并入 Nsight Systems 默认概况集合会要求多次采集，无法生成有效报告；独立实时计数器最小集合则成功。精确的指令类型、Tensor 指令数量以及逐 kernel 的瓶颈仍需要 Nsight Compute 深度分析，网页不自动对训练进程启动可能重放 kernel 的分析。
 - 不把 Windows 共享 GPU 内存或核显显存并入 NVIDIA 专用显存。进程合计不一定等于设备总占用。
 - 监视器不调用 CUDA Runtime 的 `cudaSetDevice` / `cudaMemGetInfo`。Windows 的 CUDA Driver 查询只读取设备标识，不创建 CUDA 上下文。
 - 不可用的可选计数器返回 `null`，趋势图将其显示为缺口。
@@ -106,3 +104,23 @@ cd frontend
 pnpm test
 pnpm build
 ```
+
+## 连续训练硬件采样
+
+Windows 上需要 CUDA/CUPTI 12.6 和 MSVC x64 编译工具：
+
+```powershell
+.\native\build.ps1
+```
+
+默认 helper 位于 `native/bin/cupti_stream.exe`（生成文件不入 Git），CUPTI DLL 默认路径为 CUDA 12.6 的 `extras/CUPTI/lib64`。可以通过 `GPU_INFO_PM_HELPER` / `GPU_INFO_CUPTI_PATH` 指定位置。未构建、不支持或无权限时返回明确错误，NVML/进程监控继续运行。指标组为本机 AD102 实测组合，其他架构需要通过配置和解码验证，不能保证同名指标可用。
+
+首页和趋势页共用服务器开关、设备和模式，浏览器刷新或换页不会重启采样。固定组以 10 Hz 采集、约每秒发布，采用最近 3 秒**已观测区间**的时间加权均值。全部轮换时每组约 3 秒，约 16–18 秒走完五组；离开某组后保留历史值和时间，曲线在未采样区间断开。最后一帧接收超过 3 秒会被标为非实时；过期硬件值不进入 Prometheus 数值样本。
+
+五组：SM/Tensor 活跃、L1/L2/warp、FMA/ALU/SFU 占用与 warp 指令速率、Tensor warp 指令速率、FMA Lite 实际启用线程指令与有效线程数。`Ginst/s` 表示十亿条指令每秒；线程和 warp 口径分别标注。普通浮点管线的执行证据不能用于推断某个 PID、TFLOPS、同时忙碌的 CUDA 核心数或精确 FP32 利用率。有效线程数为同窗口线程指令数 / warp 指令数，范围 0–32；没有指令时不可用，不能把它称为核心占用率。
+
+采样结果经 `TelemetryStore` 一并进入 WebSocket、history、status.json、status.md、metrics。硬件组各自保留 GPU 原始时间区间、接收时间、有效观测时长、样本数和未完成样本数。NVML 另外提供累计能量、能量差分功率、瞬时功率、温度裕量、限制时间比例、原始/未知时钟原因、驱动保留显存及 PCIe 链路状态。缺失字段为 null；能量计数回退时丢弃该次差分。
+
+helper 不创建 CUDA context，不执行 CUDA 工作负载，显式使用一个 8 MiB 硬件缓冲，持续解码并复用 counter image。启动、切换、停止和异常均管理 profiler 生命周期；与原有 Nsight 短采样共享互斥锁。第三方 profiler 争用、缓冲溢出、无样本和解码错误会显示错误并停止，不补零。程序关闭时停止 helper，父进程异常退出也会通过 stdin EOF 通知 helper 停止。详细页面仍保留折叠的 Nsight 扩展采样，读取计算派发、图形 warp、指令发射和显存读写指标。
+
+已验证的开销和 API 限制见 [训练 API 调查](benchmarks/nvidia-training-apis.md)。8 MiB 是指定缓冲大小，不是所有驱动资源的总显存保证。

@@ -1,6 +1,45 @@
 # NVIDIA 训练观测 API 探索（2026-09-29）
 
-本机：Windows / RTX 4090 AD102 / 驱动 616.92 / CUDA、CUPTI 12.6。训练进程独立运行；实验没有注入、重启训练或修改功率、频率。本次增加的是可复现探针，尚未替换网页的 Nsight CLI 采集器。
+本机：Windows / RTX 4090 AD102 / 驱动 616.92 / CUDA、CUPTI 12.6。训练进程独立运行；实验没有注入、重启训练或修改功率、频率。已将可复现探针扩展为连续 CUPTI helper，接入首页、趋势页和统一数据流；原有 Nsight CLI 保留为折叠的扩展短采样。
+
+## 已接入系统的连续观测
+
+`native/cupti_stream.cpp` → `pm_sampling.py` → `TelemetryStore` → WebSocket/history/status.json/status.md/metrics 使用同一套数据。`training_health.py` 同时添加 NVML 能量、瞬时功率、能量差分功率、温度裕量、限制时间比例、原始/未知时钟原因、驱动保留显存与 PCIe 状态。前端首页和趋势页共用服务端开关，多个网页不会重复启动采集器。
+
+- 五组：SM/Tensor、L1/L2/warp、FMA/ALU/SFU、Tensor 指令、FMA Lite 实际启用线程指令。固定组 10 Hz 采样、约每秒发布；按已观测区间计算 3 秒时间加权均值。命中率也是时间均值，并非整段请求数加权命中率。
+- 全部轮换每组约 3 秒，实测约 16–18 秒一圈。组间不能直接作同时刻相关性判断；旧值带时间并淡化，曲线断开，过期数值不进入 Prometheus。
+- helper 按 PCI bus ID 对应 NVML 与 CUDA 设备，不假设两者编号一致。与 Nsight 共享 profiler 互斥，连续采样中请求旧探针已验证返回 HTTP 409。
+- 一个 8 MiB 硬件缓冲，每次解码复用 counter image，最多 128 样本；每组滑窗最多 128 条。停止、错误和父进程 stdin EOF 都释放采样器；十秒没有有效样本即终止。没有 CUDA context、工作负载或 kernel replay。
+- 当前驱动在组间仅 Stop/SetConfig/Start 会出现无新数据，改为 Stop/Disable 后重新 Enable。FMA/ALU/SFU 与 Tensor 活跃合组虽然配置报告 1 pass，实际解码报内存不足，改为分组；不能只依赖配置检查断言可用。
+- 实际 GPU 时间戳跨解码批次出现 93–343 ns 的边界重叠。只裁剪不超过 10 μs 的重叠并记录 `timestamp_trimmed_ns`；更大的重叠仍报错。未完成样本单独记录，不补齐为零。
+
+### 开销复测
+
+四组轮换的 50 次网页数据读取（49.40 秒）中，helper 的 Windows PID 计数峰值：本地显存 **24 KiB**、非本地/共享约 **8.004 MiB**；系统工作集 **106.05 MiB**，CPU 时间 **0.25 秒**，约为一个逻辑核心的 0.5%。随后加入第五组的连续轮换验证正常。停止开关后确认没有残留 `cupti_stream` 进程。
+
+这里量到的是 helper 的进程记账，不能覆盖所有驱动分配或网页渲染开销；系统工作集不是 VRAM。整卡显存同时随训练波动，不能用整卡前后差值当作采集器的净成本。未进行固定训练步的 A/B 吞吐比较，因此尚不能保证零训练减速或总额外 VRAM 在所有场景严格低于 100 MiB。
+
+### 普通 CUDA 浮点核心确实在工作吗
+
+进一步的同窗口实测：
+
+| 计数器 | 读数 | 含义 |
+| --- | --- | --- |
+| `sm__thread_inst_executed_pipe_fmalite_pred_on.sum.per_second` | 127.7–234.0 G thread instructions/s | 实际启用线程执行的 FMA Lite 指令 |
+| `sm__inst_executed_pipe_fmalite_realtime.sum.per_second` | 4.25–7.88 G warp instructions/s | 同管线的 warp 指令 |
+| 两者同窗口之比 | 约 29–30 / 32 | 每条 warp 指令平均启用的线程数 |
+
+NVIDIA 的 [Nsight Compute Profiling Guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/) 将 FMA Lite 列为普通 FP32 和 FP16 算术管线。因此非零的 FMA Lite 执行及 predicated-on 线程指令，是整卡普通浮点执行单元被使用的直接计数证据。它不能归属某个 PID，不能单独区分 FP32/FP16，也不能把 29/32 解释成 91% 的 CUDA 核心占用率。FMA Heavy 还可能执行整数乘加，不能只凭名称把它全部计为浮点。
+
+另一个独立实验成功得到标量 FP16 FMA warp 指令约 1100–3060 万条/秒；它与上述两项一起配置需要 2 passes，尚未加入默认连续组。精确 FLOPS 还需要区分运算类型、有效线程、向量宽度，以及 Tensor 的指令形状/精度/稀疏模式。`Ginst/s` 不等于 TFLOPS，也不能把所有指令乘 2 得到可靠结果。
+
+### 为什么未到 480 W，显存和 PCIe 也没满
+
+本机 480 W 是 NVML 报告的功率上限，不能由此推导每种高效训练都必须达到 480 W，或 Tensor 单独不可能达到某种功耗。实际功耗还随时钟、电压、指令组合和电路活动变化。[NVIDIA-smi](https://docs.nvidia.com/deploy/nvidia-smi/) 区分功率读数与限制值。
+
+[NVIDIA GPU 性能背景](https://docs.nvidia.com/deeplearning/performance/dl-performance-gpu-background/index.html) 说明，除了算术和访存吞吐，还可能受延迟、可用并行度限制。PCIe/DRAM 未满不排除 L1/L2/共享内存访问、指令依赖、同步、寄存器资源、小 kernel 尾部或 CPU 派发空隙。当前计数只能提供这些方向的线索，不能判定具体训练瓶颈；下一步有效证据是训练阶段/kernel 时间线和热点的 PC/SASS/Range 采样。
+
+本轮原始数据位于被忽略的 `benchmarks/results/`：`pm_web_overhead.json`、`pm_five_groups.json`、`pm_fmalite_threads.txt`、`pm_fmalite_lanes.txt`、`pm_scalar_fp16.txt`、`pm_timestamp_audit.json`。
 
 ## 已经验证的突破：CUPTI PM Sampling 可边采边读
 
@@ -35,7 +74,7 @@ warp 指标的分母是 elapsed cycles，包含空闲时间；不能直接当作
 - 一次可用性查询返回 `CUPTI_ERROR_UNKNOWN`，稍后成功，根因未确定。当时页面存在间歇 Nsight 进程；正式实现应统一设备 profiler 互斥、返回 busy/unsupported/failed，不能把失败记为 0。
 - 这是整卡数据，包括其他 GPU 程序；不能按进程显存比例分配给训练 PID。
 
-建议实现独立常驻 C++ helper，通过项目统一消息流发送 GPU 时间戳、采样区间、metric set、有效样本数及溢出标志。10 Hz 原始数据汇成每秒更新的 2–5 秒滑窗；窗口滚动必须按实际时间、分子/分母语义聚合。使用循环 counter image 并持续 drain；本探针的固定 128 样本和 6 秒生命周期不是完整常驻实现。
+最初的 6 秒探针只验证可行性；上方连续实现已增加生命周期、互斥、持续解码及按时间聚合。保留以下初始实验记录用于复现和区分测量范围。
 
 官方：[PM Sampling API](https://docs.nvidia.com/cupti/api/group__CUPTI__PM__SAMPLING__API.html)。最新 [CUPTI Python 已有 PM/Host 包装](https://docs.nvidia.com/cupti-python/13.4.0/user-guide/topics/overview.html)，但其 [13.4 平台支持仍只列 Linux](https://docs.nvidia.com/cupti-python/13.4.0/release-notes/topics/support.html)；本项目 Windows 路径可直接使用已验证的 C API。
 
@@ -90,4 +129,4 @@ $env:PATH = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\CUP
 
 本机原始记录保存在被忽略的 `benchmarks/results/`：`pm_live.txt`、`pm_overhead.json`、`pm_cache.txt`、`pm_tensor_instructions.txt`、`pm_instructions.txt`、`pm_descriptions.txt`、`sass_metrics.txt`、`nvml_training.json`。它们随本机保留，不作为跨机器基准。
 
-建议接入顺序：PM helper 与统一 profiler 互斥 → 能量/时钟原因/温度裕量 → 训练阶段与 kernel 时间线 → 热点 PC/SASS/Range 分析。这样先获得连续观测，再用可以定位到算子的证据指导训练优化。
+PM helper、统一 profiler 互斥及 NVML 训练状态已接入。尚待深入的是训练阶段与 kernel 时间线、热点 PC/SASS/Range 分析；这些能力需要进程内关联或短时分析，不能冒充现有的无侵入整卡读数。

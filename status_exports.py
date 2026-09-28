@@ -131,6 +131,25 @@ def render_status_markdown(frame: dict[str, Any]) -> str:
     if not gpus:
         lines.append("| — | 暂无 NVIDIA GPU 读数 | — | — | — | — | — |")
 
+    lines += ["", "## 训练硬件观测", ""]
+    sampling = frame.get("hardware_sampling") or {}
+    lines.append(f"硬件采样：{_cell(sampling.get('state', 'off'))}；整卡数据，不归属进程。")
+    if sampling.get("error"):
+        lines.append(f"采样错误：{_cell(sampling['error'])}")
+    for name, group in (sampling.get("groups") or {}).items():
+        fresh = health["snapshot_fresh"] and sampling.get("enabled") and time.time() - group["sampled_at"] <= 3
+        lines += ["", f"### {_cell(name)} · {'实时' if fresh else '历史值 / 未采样间隔'}", "",
+                  f"接收时间：{_time(group.get('sampled_at'))}；窗口有效观测 {_reading(group.get('observed_seconds'), ' 秒')}。", ""]
+        for key, metric in group.get("metrics", {}).items():
+            lines.append(f"- {_cell(key)}：{_reading(metric.get('value'))} {_cell(metric.get('unit'))}")
+    for gpu in gpus:
+        details = gpu.get("training_health") or {}
+        lines += ["", f"GPU {_cell(gpu.get('id'))} NVML：",
+                  f"- 瞬时功率：{_reading(details.get('instant_power_w'), ' W')}；能量差分功率：{_reading(details.get('energy_window_w'), ' W')}",
+                  f"- 累计能量：{_reading(details.get('energy_total_j'), ' J')}；温度裕量：{_reading(details.get('temperature_margin_c'), ' °C')}",
+                  f"- 功率限制时间占比：{_percent(details.get('power_limit_time_percent'))}；时钟原因原始值：{_reading(details.get('clock_reasons_raw'))}",
+                  f"- 未知时钟原因位：{_reading(details.get('unknown_clock_reasons'))}；驱动保留：{_bytes(details.get('driver_reserved_bytes'))}"]
+
     lines += [
         "", "## 进程显存", "",
         f"Windows 进程计数采样：{_time(frame.get('processes_sampled_at'))}。"
@@ -176,6 +195,23 @@ def render_status_markdown(frame: dict[str, Any]) -> str:
 
 # Prometheus text exposition 0.0.4. Names and help strings are fixed; labels are escaped.
 _METRICS = {
+    "gpu_info_hardware_sampling_enabled": "Whether hardware sampling is enabled in the captured frame.",
+    "gpu_info_hardware_sample_timestamp_seconds": "Receive timestamp of a hardware metric group.",
+    "gpu_info_hardware_sample_fresh": "Whether the group has fresh data, not a retained historical result.",
+    "gpu_info_hardware_metric_ratio": "Time-weighted hardware ratio; groups can have different observation windows.",
+    "gpu_info_hardware_warp_instructions_per_second": "Hardware warp instruction rate, not FLOPS.",
+    "gpu_info_hardware_thread_instructions_per_second": "Predicated-on thread instruction rate, not FLOPS.",
+    "gpu_info_hardware_active_threads_per_warp": "Active threads per warp instruction, not core utilization.",
+    "gpu_info_gpu_energy_joules_total": "GPU board energy since driver reload, in joules.",
+    "gpu_info_gpu_instant_power_watts": "Instantaneous GPU board power in watts.",
+    "gpu_info_gpu_energy_window_watts": "Energy difference divided by measurement time, in watts.",
+    "gpu_info_gpu_temperature_margin_celsius": "Thermal margin reported by NVML.",
+    "gpu_info_gpu_power_limit_time_ratio": "Fraction of measured time under software power limiting.",
+    "gpu_info_gpu_software_thermal_time_ratio": "Fraction of measured time under software thermal limiting.",
+    "gpu_info_gpu_hardware_thermal_time_ratio": "Fraction of measured time under hardware thermal limiting.",
+    "gpu_info_gpu_driver_reserved_bytes": "Driver reserved device memory reported by NVML v2.",
+    "gpu_info_gpu_clock_reasons_mask": "Raw NVML clock reasons mask, including unknown bits.",
+    "gpu_info_gpu_unknown_clock_reasons_mask": "Clock reasons not recognized by this collector.",
     "gpu_info_up": "A fresh telemetry frame with at least one NVIDIA GPU is available.",
     "gpu_info_snapshot_timestamp_seconds": "Unix timestamp of the latest frame.",
     "gpu_info_snapshot_fresh": "Whether the latest frame is no older than five seconds.",
@@ -258,6 +294,23 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
     add("gpu_info_display_sample_timestamp_seconds", frame.get("display_sampled_at"))
     add("gpu_info_display_sample_fresh", int(health["display_fresh"]))
     add("gpu_info_collection_errors", len(frame.get("errors") or []))
+    sampling = frame.get("hardware_sampling") or {}
+    add("gpu_info_hardware_sampling_enabled", int(bool(sampling.get("enabled")) and health["snapshot_fresh"]))
+    for group_name, group in (sampling.get("groups") or {}).items():
+        labels = {"gpu": sampling.get("gpu_id"), "group": group_name}
+        fresh = bool(sampling.get("enabled")) and health["snapshot_fresh"] and time.time() - group["sampled_at"] <= 3
+        add("gpu_info_hardware_sample_timestamp_seconds", group.get("sampled_at"), labels)
+        add("gpu_info_hardware_sample_fresh", int(fresh), labels)
+        if fresh:
+            for key, metric in group.get("metrics", {}).items():
+                name = {
+                    "percent": "gpu_info_hardware_metric_ratio",
+                    "warp_instructions_per_second": "gpu_info_hardware_warp_instructions_per_second",
+                    "thread_instructions_per_second": "gpu_info_hardware_thread_instructions_per_second",
+                    "threads_per_warp_instruction": "gpu_info_hardware_active_threads_per_warp",
+                }[metric["unit"]]
+                value = ratio(metric.get("value")) if metric["unit"] == "percent" else metric.get("value")
+                add(name, value, {**labels, "metric": key})
     if health["snapshot_fresh"]:
         add("gpu_info_gpu_count", len(gpus))
         if health["process_fresh"]:
@@ -278,6 +331,20 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
         power = gpu.get("power") or {}
         clocks = gpu.get("clocks") or {}
         bar1 = gpu.get("bar1") or {}
+        details = gpu.get("training_health") or {}
+        for metric, key, as_ratio in (
+            ("gpu_info_gpu_energy_joules_total", "energy_total_j", False),
+            ("gpu_info_gpu_instant_power_watts", "instant_power_w", False),
+            ("gpu_info_gpu_energy_window_watts", "energy_window_w", False),
+            ("gpu_info_gpu_temperature_margin_celsius", "temperature_margin_c", False),
+            ("gpu_info_gpu_power_limit_time_ratio", "power_limit_time_percent", True),
+            ("gpu_info_gpu_software_thermal_time_ratio", "software_thermal_time_percent", True),
+            ("gpu_info_gpu_hardware_thermal_time_ratio", "hardware_thermal_time_percent", True),
+            ("gpu_info_gpu_driver_reserved_bytes", "driver_reserved_bytes", False),
+            ("gpu_info_gpu_clock_reasons_mask", "clock_reasons_raw", False),
+            ("gpu_info_gpu_unknown_clock_reasons_mask", "unknown_clock_reasons", False),
+        ):
+            add(metric, ratio(details.get(key)) if as_ratio else details.get(key), label)
         for metric, value in (
             ("gpu_info_gpu_memory_total_bytes", memory.get("total")),
             ("gpu_info_gpu_memory_used_bytes", memory.get("used")),
@@ -331,6 +398,7 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
 
     lines: list[str] = []
     for name, help_text in _METRICS.items():
-        lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} gauge"))
+        kind = "counter" if name == "gpu_info_gpu_energy_joules_total" else "gauge"
+        lines.extend((f"# HELP {name} {help_text}", f"# TYPE {name} {kind}"))
         lines.extend(samples[name])
     return "\n".join(lines) + "\n"

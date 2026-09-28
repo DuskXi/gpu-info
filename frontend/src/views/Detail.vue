@@ -1,78 +1,29 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS, CategoryScale, LinearScale, LogarithmicScale, PointElement,
   LineElement, Tooltip, Legend,
 } from 'chart.js'
 import { useMonitorData, procKey } from '../composables/useMonitorData'
-import { useActivityProbe } from '../composables/useActivityProbe'
+import HardwarePanel from '../components/HardwarePanel.vue'
+import LegacyActivity from '../components/LegacyActivity.vue'
 import { bytes, number, percent } from '../format'
 import { topProcessTargets } from '../processComparison'
 import ProcessPicker from '../components/ProcessPicker.vue'
 
 ChartJS.register(CategoryScale, LinearScale, LogarithmicScale, PointElement, LineElement, Tooltip, Legend)
 
-const { snapshot, history } = useMonitorData()
+const { snapshot, history, now } = useMonitorData()
 const mode = ref('gpu')
 const selectedGpu = ref('all')
 const selectedProcess = ref('')
 const processManuallySelected = ref(false)
 const gpuMetric = ref('vram')
 const processMetric = ref('used_memory')
-const probeGpu = ref('0')
-const probeDetails = ref(null)
 const compareTop = ref(false)
 const topCount = ref(5)
 const logMemoryScale = ref(true)
-const {
-  activityProbe, pipelineProbe, probeBusy, probeError, pipelineError,
-  autoEnabled, autoGpuId, autoKind, toggleAuto, loadLatest,
-} = useActivityProbe()
-watch(autoGpuId, gpuId => {
-  if (gpuId !== null) probeGpu.value = String(gpuId)
-}, { immediate: true })
-const activityGroups = [
-  { label: '工作进入与并行度', metrics: [
-    { key: 'gr_active', label: '图形 / 计算前端活跃' },
-    { key: 'compute_sync', label: '同步计算派发' },
-    { key: 'compute_async', label: '异步计算派发' },
-    { key: 'compute_warps', label: '计算 warp 在飞' },
-    { key: 'sm_active', label: 'SM 有 warp 驻留' },
-    { key: 'unallocated_warps', label: '活跃 SM 未分配 warp 槽位' },
-  ] },
-  { label: '执行管线', metrics: [
-    { key: 'sm_issue', label: 'SM 指令发射' },
-    { key: 'tensor_active', label: 'Tensor 管线活跃' },
-  ] },
-  { label: '显存与图形', metrics: [
-    { key: 'dram_read', label: '显存读取带宽' },
-    { key: 'dram_write', label: '显存写入带宽' },
-    { key: 'graphics_vertex', label: '图形 · 顶点 / 几何 warp' },
-    { key: 'graphics_pixel', label: '图形 · 像素 warp' },
-  ] },
-]
-const activityMetrics = activityGroups.flatMap(group =>
-  group.metrics.map(metric => ({ ...metric, group: group.label })))
-const pipelineMetrics = [
-  { key: 'tensor_active', label: 'Tensor', group: '矩阵运算' },
-  { key: 'fma_light', label: 'FMA Light', group: '标量算术' },
-  { key: 'fma_heavy', label: 'FMA Heavy', group: '标量算术' },
-  { key: 'alu', label: 'ALU', group: '整数 / 逻辑' },
-  { key: 'sfu', label: 'SFU / XU', group: '特殊函数 / 类型转换' },
-]
-
-onMounted(loadLatest)
-
-function runActivityProbe() {
-  if (probeDetails.value) probeDetails.value.open = true
-  toggleAuto(probeGpu.value)
-}
-function runPipelineProbe() {
-  if (probeDetails.value) probeDetails.value.open = true
-  toggleAuto(probeGpu.value, 'pipelines')
-}
-
 const gpuMetrics = [
   { key: 'vram', label: '专用显存', group: '内存', unit: 'GB', read: g => g.memory?.used == null ? null : g.memory.used / 1073741824 },
   { key: 'vram_percent', label: '显存占用率', group: '内存', unit: '%', read: g => g.memory?.percent },
@@ -80,6 +31,9 @@ const gpuMetrics = [
   { key: 'memory_load', label: '显存控制器', group: '负载', unit: '%', read: g => g.utilization?.memory },
   { key: 'temperature', label: '温度', group: '状态', unit: '°C', read: g => g.temperature },
   { key: 'power', label: '功耗', group: '状态', unit: 'W', read: g => g.power?.usage },
+  { key: 'instant_power', label: '瞬时功率', group: '状态', unit: 'W', read: g => g.training_health?.instant_power_w },
+  { key: 'energy_power', label: '能量差分功率', group: '状态', unit: 'W', read: g => g.training_health?.energy_window_w },
+  { key: 'thermal_margin', label: '温度裕量', group: '状态', unit: '°C', read: g => g.training_health?.temperature_margin_c },
   { key: 'clock', label: '核心频率', group: '频率', unit: 'MHz', read: g => g.clocks?.graphics },
   { key: 'memory_clock', label: '显存频率', group: '频率', unit: 'MHz', read: g => g.clocks?.memory },
   { key: 'encoder', label: '编码器', group: '引擎', unit: '%', read: g => g.engines?.encoder },
@@ -270,68 +224,10 @@ function chooseProcess(key) {
       <div class="intro-count"><strong><RollingValue :value="history.length" /></strong><span>采样点</span></div>
     </section>
 
-    <section class="activity-probe section-block" aria-labelledby="activity-heading">
-      <div class="section-heading">
-        <div><p class="eyebrow">SHORT WINDOWS / HARDWARE COUNTERS</p><h2 id="activity-heading">计算单元活动</h2></div>
-        <div class="activity-probe-controls">
-          <label for="probe-gpu">采样设备</label>
-          <select id="probe-gpu" v-model="probeGpu" :disabled="probeBusy || autoEnabled">
-            <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
-          </select>
-          <button type="button" role="switch" :aria-checked="autoEnabled && autoKind === 'general'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && autoKind !== 'general') || !gpus.length" @click="runActivityProbe">
-            {{ autoEnabled && autoKind === 'general' ? '停止概况采样' : '持续采样概况' }}
-          </button>
-          <button type="button" role="switch" :aria-checked="autoEnabled && autoKind === 'pipelines'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && autoKind !== 'pipelines') || !gpus.length" @click="runPipelineProbe">
-            {{ autoEnabled && autoKind === 'pipelines' ? '停止管线采样' : '持续采样管线' }}
-          </button>
-        </div>
-      </div>
-      <details ref="probeDetails" class="activity-probe-details">
-        <summary>查看设备级采样细节 <span v-if="activityProbe">SM {{ number(activityProbe.metrics?.sm_active?.mean_percent, 1, '%') }} · Tensor {{ number(activityProbe.metrics?.tensor_active?.mean_percent, 1, '%') }}</span><span v-if="pipelineProbe">ALU {{ number(pipelineProbe.metrics?.alu?.mean_percent, 1, '%') }} · FMA Heavy {{ number(pipelineProbe.metrics?.fma_heavy?.mean_percent, 1, '%') }}</span><span v-if="probeError || pipelineError">采样失败 · 展开查看</span></summary>
-      <p class="activity-probe-intro">两种持续模式互斥，每轮采集整卡 2 秒：概况 100 Hz、SM 管线 10 Hz，完成后休息至少 15 秒。最近 3 轮按采样数计算滚动均值，轮间未采样。关掉开关后，正在进行的一轮仍会完成。</p>
-      <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
-      <div v-if="activityProbe" class="activity-grid activity-grid-detailed">
-        <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
-          <small class="activity-reading-group">{{ metric.group }}</small>
-          <span>{{ metric.label }}</span>
-          <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
-          <small>{{ activityProbe.rolling ? '滚动均值' : '窗口平均' }} <template v-if="activityProbe.metrics?.[metric.key]?.p90_percent !== undefined">· 本轮 P90 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.p90_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.p90_percent" /> </template>· 本轮峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
-          <small>有活动的采样 <RollingValue :value="activityProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="activityProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
-        </article>
-      </div>
-      <div v-if="activityProbe?.process_context?.length" class="activity-process-context">
-        <span>同期进程 SM 负载 <small>独立读数 · 无法将上方 Tensor 活动归属到某个进程</small></span>
-        <div v-for="process in activityProbe.process_context" :key="process.pid">
-          <strong>{{ process.name }} <small>PID <RollingValue :value="process.pid" /></small></strong>
-          <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
-        </div>
-      </div>
-      <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">概况尚无采样。</p>
-      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}{{ activityProbe?.rolling ? `均值汇总最近 ${activityProbe.rolling.windows} 轮、有效窗口约 ${activityProbe.rolling.sampled_seconds} 秒；轮间没有观测。` : '' }}P90、峰值和有活动的采样数只描述最新一轮。不同百分比不能相加，也不能换算为实际 TFLOPS。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。探针不会把其他程序的活动归给训练进程。</p>
-      <div class="pipeline-probe">
-        <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>短时持续采样 · GPU 整卡</span></div>
-        <p class="activity-probe-intro">从实际执行的指令管线观察 Tensor、FMA、ALU 和 SFU/XU。FMA 也可执行部分整数乘法，XU 也处理类型转换；这些值不是精确的 FP32 核心利用率。各管线峰值基准不同，百分比不能相加。</p>
-        <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
-        <div v-if="pipelineProbe" class="activity-grid activity-grid-pipelines">
-          <article v-for="metric in pipelineMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
-            <small class="activity-reading-group">{{ metric.group }}</small>
-            <span>{{ metric.label }}</span>
-            <strong><RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.mean_percent" /></strong>
-            <small>{{ pipelineProbe.rolling ? '滚动均值' : '窗口平均' }} · 本轮峰值 <RollingValue :value="number(pipelineProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="pipelineProbe.metrics?.[metric.key]?.peak_percent" /></small>
-            <small>有活动的采样 <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="pipelineProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
-          </article>
-        </div>
-        <div v-if="pipelineProbe?.process_context?.length" class="activity-process-context">
-          <span>同期进程 SM 负载 <small>独立读数 · 不能据此分配整卡指令管线值</small></span>
-          <div v-for="process in pipelineProbe.process_context" :key="process.pid">
-            <strong>{{ process.name }} <small>PID <RollingValue :value="process.pid" /></small></strong>
-            <span>平均 <RollingValue :value="number(process.sm_mean_percent, 1, '%')" :amount="process.sm_mean_percent" /> · 峰值 <RollingValue :value="number(process.sm_peak_percent, 1, '%')" :amount="process.sm_peak_percent" /> · VRAM <RollingValue :value="bytes(process.used_memory)" :amount="process.used_memory" /></span>
-          </div>
-        </div>
-        <p v-if="!pipelineProbe && !probeBusy" class="activity-probe-empty">尚无 SM 管线采样。使用上方“持续采样管线”开关，支持 AD10x（RTX 40 系列）设备。</p>
-        <p v-if="pipelineProbe" class="data-note">GPU {{ pipelineProbe.gpu_id }} · {{ new Date(pipelineProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false }) }}。{{ pipelineProbe.rolling ? `均值汇总最近 ${pipelineProbe.rolling.windows} 轮、有效窗口约 ${pipelineProbe.rolling.sampled_seconds} 秒；轮间没有观测。` : `最新一轮 ${pipelineProbe.duration_seconds} 秒、10 Hz 的粗粒度窗口。` }}峰值和有活动的采样数只描述最新一轮。当前计数器不提供进程归属；训练进程的 SM 负载可作同期线索，不能把整卡 FMA 或 Tensor 值直接分配给它。指令条数在本机导出时曾溢出，故仅展示管线吞吐率。</p>
-      </div>
-      </details>
+    <section class="section-block">
+      <div class="section-heading"><div><p class="eyebrow">TRAINING / HARDWARE COUNTERS</p><h2>计算单元与训练效率</h2></div></div>
+      <HardwarePanel v-for="gpu in gpus" :key="gpu.id" :gpu="gpu" :state="snapshot?.hardware_sampling" :history="history" :now="now / 1000" detailed />
+      <LegacyActivity :gpus="gpus" :sampling="snapshot?.hardware_sampling" />
     </section>
 
     <div class="mode-tabs" role="tablist" aria-label="分析对象">

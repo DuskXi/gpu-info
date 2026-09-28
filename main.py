@@ -19,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 
 from activity_probe import ActivityProbe, ProbeError
 from monitor import monitor
+from pm_sampling import PMSampling
 from status_exports import render_prometheus, render_status_markdown, status_message
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class TelemetryStore:
         self._sequence = 0
         self.stream_id = uuid.uuid4().hex
         self.activity_probe = ActivityProbe()
+        self.pm_sampling = PMSampling(self.activity_probe._lock)
         self.latest_activity: dict[str, Any] | None = None
         self.latest_pipeline_activity: dict[str, Any] | None = None
         self.event_path = event_path or Path(__file__).parent / "data" / "display-events.jsonl"
@@ -177,6 +179,7 @@ class TelemetryStore:
             return
         self._pending = None
         self._record_display(payload)
+        payload["hardware_sampling"] = self.pm_sampling.snapshot()
         self._sequence += 1
         frame = TelemetryFrame(self.stream_id, self._sequence, time.time(), payload)
         self.history.append(frame)
@@ -202,6 +205,7 @@ class TelemetryStore:
         self.clients.discard(queue)
 
     def close(self) -> None:
+        self.pm_sampling.stop()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self._pending is None or self._pending.done():
             monitor.close()
@@ -306,6 +310,24 @@ async def latest_activity_probe(
 @app.get("/api/display-events")
 async def display_events(limit: int = Query(default=50, ge=1, le=200)) -> list[dict[str, Any]]:
     return list(store.display_events)[-limit:]
+
+
+@app.post("/api/hardware-sampling")
+async def hardware_sampling(
+    enabled: bool,
+    gpu: int = Query(default=0, ge=0),
+    mode: Literal["all", "activity", "cache", "pipelines", "tensor", "scalar"] = "all",
+) -> dict[str, Any]:
+    if not enabled:
+        return await asyncio.to_thread(store.pm_sampling.stop)
+    device = next((row for row in latest_frame().payload.get("gpus", []) if row["id"] == gpu), None)
+    if device is None:
+        raise HTTPException(status_code=404, detail="GPU not found")
+    try:
+        return await asyncio.to_thread(store.pm_sampling.start, gpu,
+                                      device.get("device_info", {}).get("pci_bus_id"), mode)
+    except ProbeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.websocket("/api/ws")
