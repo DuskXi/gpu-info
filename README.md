@@ -55,13 +55,15 @@ pnpm dev
 | `GET /metrics` | 根路径的 Prometheus 文本指标；默认只输出系统和设备指标 |
 | `GET /metrics?include_processes=true` | 另外输出带 GPU、PID、进程名标签的逐进程指标 |
 | `GET /api/history?limit=120` | 最近 1–120 帧，按时间升序 |
-| `POST /api/activity-probe?gpu=0` | 按需采集 5 秒设备级 GPU 硬件活动；需要本机 Nsight Systems CLI 和性能计数器权限 |
-| `POST /api/activity-probe?gpu=0&kind=pipelines` | 单独采集 AD10x 的 Tensor、FMA Light/Heavy、ALU、SFU 管线吞吐；不会自动启动 |
+| `POST /api/activity-probe?gpu=0` | 采集 5 秒设备级 GPU 硬件活动；需要本机 Nsight Systems CLI 和性能计数器权限 |
+| `POST /api/activity-probe?gpu=0&kind=pipelines` | 采集 AD10x 的 Tensor、FMA Light/Heavy、ALU、SFU 管线吞吐 |
 | `GET /api/activity-probe[?kind=pipelines]` | 最近一次对应类型的采样结果；服务端重启后清空 |
 | `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
 
 三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。整帧超过 5 秒未更新时，状态接口明确标记过期，`/metrics` 将 `gpu_info_up` 置 0 并停止输出旧的硬件读数；Windows 进程计数超过 30 秒时停止输出旧的逐进程读数。Prometheus 可通过时间戳指标计算样本年龄。指标使用 `gpu_info_` 前缀、字节／赫兹等基础单位和 0–1 比率；缺失计数器不输出样本。逐进程序列会随 PID 更替而增长，只有确实需要长期抓取时才启用。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
+
+首页和细分页的“持续采样”开关共用状态：概况与 SM 管线两种模式互斥，开启后立即采集一轮 5 秒的整卡活动（概况 100 Hz，SM 管线 10 Hz），完成后休息至少 45 秒再采下一轮；关闭后不再启动新一轮，已经开始的一轮会完成。开关只在当前浏览器标签页有效。活动百分比和管线吞吐百分比不是浮点运算次数，不能据此计算真实 TFLOPS；要获得按精度和 kernel 区分的运算计数，需要在训练进程内统计或进行更重的逐 kernel profiling。
 
 ## 统计口径
 

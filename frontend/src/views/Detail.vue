@@ -27,8 +27,11 @@ const topCount = ref(5)
 const logMemoryScale = ref(true)
 const {
   activityProbe, pipelineProbe, probeBusy, probeError, pipelineError,
-  loadLatest, capture, capturePipelines,
+  autoEnabled, autoGpuId, autoKind, toggleAuto, loadLatest,
 } = useActivityProbe()
+watch(autoGpuId, gpuId => {
+  if (gpuId !== null) probeGpu.value = String(gpuId)
+}, { immediate: true })
 const activityGroups = [
   { label: '工作进入与并行度', metrics: [
     { key: 'gr_active', label: '图形 / 计算前端活跃' },
@@ -61,13 +64,13 @@ const pipelineMetrics = [
 
 onMounted(loadLatest)
 
-async function runActivityProbe() {
+function runActivityProbe() {
   if (probeDetails.value) probeDetails.value.open = true
-  await capture(probeGpu.value)
+  toggleAuto(probeGpu.value)
 }
-async function runPipelineProbe() {
+function runPipelineProbe() {
   if (probeDetails.value) probeDetails.value.open = true
-  await capturePipelines(probeGpu.value)
+  toggleAuto(probeGpu.value, 'pipelines')
 }
 
 const gpuMetrics = [
@@ -272,20 +275,20 @@ function chooseProcess(key) {
         <div><p class="eyebrow">ON DEMAND / HARDWARE COUNTERS</p><h2 id="activity-heading">计算单元活动</h2></div>
         <div class="activity-probe-controls">
           <label for="probe-gpu">采样设备</label>
-          <select id="probe-gpu" v-model="probeGpu" :disabled="probeBusy">
+          <select id="probe-gpu" v-model="probeGpu" :disabled="probeBusy || autoEnabled">
             <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
           </select>
-          <button type="button" :disabled="probeBusy || !gpus.length" @click="runActivityProbe">
-            {{ probeBusy ? '正在采集 5 秒…' : '采集硬件活动' }}
+          <button type="button" role="switch" :aria-checked="autoEnabled && autoKind === 'general'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && autoKind !== 'general') || !gpus.length" @click="runActivityProbe">
+            {{ autoEnabled && autoKind === 'general' ? '停止概况采样' : '持续采样概况' }}
           </button>
-          <button type="button" :disabled="probeBusy || !gpus.length" @click="runPipelineProbe">
-            {{ probeBusy ? '采集中…' : '采集 SM 管线' }}
+          <button type="button" role="switch" :aria-checked="autoEnabled && autoKind === 'pipelines'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && autoKind !== 'pipelines') || !gpus.length" @click="runPipelineProbe">
+            {{ autoEnabled && autoKind === 'pipelines' ? '停止管线采样' : '持续采样管线' }}
           </button>
         </div>
       </div>
       <details ref="probeDetails" class="activity-probe-details">
         <summary>查看设备级采样细节 <span v-if="activityProbe">SM {{ number(activityProbe.metrics?.sm_active?.mean_percent, 1, '%') }} · Tensor {{ number(activityProbe.metrics?.tensor_active?.mean_percent, 1, '%') }}</span><span v-if="pipelineProbe">ALU {{ number(pipelineProbe.metrics?.alu?.mean_percent, 1, '%') }} · FMA Heavy {{ number(pipelineProbe.metrics?.fma_heavy?.mean_percent, 1, '%') }}</span><span v-if="probeError || pipelineError">采样失败 · 展开查看</span></summary>
-      <p class="activity-probe-intro">按需用 Nsight Systems 采集 5 秒：概况 100 Hz，SM 管线 10 Hz。探针仅统计整卡，不会把其他程序的活动归给选中的训练进程。</p>
+      <p class="activity-probe-intro">两种持续模式互斥，每轮采集整卡 5 秒：概况 100 Hz、SM 管线 10 Hz，完成后休息至少 45 秒。关掉开关后，正在进行的一轮仍会完成。探针不会把其他程序的活动归给选中的训练进程。</p>
       <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
       <div v-if="activityProbe" class="activity-grid activity-grid-detailed">
         <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
@@ -304,9 +307,9 @@ function chooseProcess(key) {
         </div>
       </div>
       <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
-      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}P90 表示 90% 样本不超过该值；峰值仍是单个采样间隔的读数，不是瞬时峰值。不同百分比不能相加。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
+      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}P90 表示 90% 样本不超过该值；峰值仍是单个采样间隔的读数，不是瞬时峰值。不同百分比不能相加，也不能换算为实际 TFLOPS。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
       <div class="pipeline-probe">
-        <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>单独按需采样 · GPU 整卡</span></div>
+        <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>短时持续采样 · GPU 整卡</span></div>
         <p class="activity-probe-intro">从实际执行的指令管线观察 Tensor、FMA、ALU 和 SFU/XU。FMA 也可执行部分整数乘法，XU 也处理类型转换；这些值不是精确的 FP32 核心利用率。各管线峰值基准不同，百分比不能相加。</p>
         <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
         <div v-if="pipelineProbe" class="activity-grid activity-grid-pipelines">

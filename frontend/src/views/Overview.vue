@@ -9,7 +9,7 @@ import { processPieGradient, processPieSliceAt, processVramComposition } from '.
 const { snapshot } = useMonitorData()
 const {
   activityProbe, pipelineProbe, probeBusy, probeError, pipelineError,
-  loadLatest, capture, capturePipelines,
+  autoEnabled, autoGpuId, autoKind, toggleAuto, loadLatest,
 } = useActivityProbe()
 onMounted(loadLatest)
 const homeActivityMetrics = [
@@ -249,10 +249,10 @@ function displayLabel(display) {
             </div>
             <section class="gpu-activity" :aria-label="`GPU ${gpu.id} 整卡硬件活动`">
               <div class="gpu-activity-head">
-                <div><span class="label">SM 与显存活动</span><small>整卡性能计数器 · 按需采集 5 秒</small></div>
+                <div><span class="label">SM 与显存活动</span><small>整卡性能计数器 · 持续短采样</small></div>
                   <div class="gpu-activity-actions">
-                    <button type="button" :disabled="probeBusy" @click="capture(gpu.id)">{{ probeBusy ? '采集中…' : '采集概况' }}</button>
-                    <button type="button" :disabled="probeBusy" @click="capturePipelines(gpu.id)">{{ probeBusy ? '采集中…' : '采集 SM 管线' }}</button>
+                    <button type="button" role="switch" :aria-checked="autoEnabled && autoGpuId === gpu.id && autoKind === 'general'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && (autoGpuId !== gpu.id || autoKind !== 'general'))" @click="toggleAuto(gpu.id)">{{ autoEnabled && autoGpuId === gpu.id && autoKind === 'general' ? '停止概况采样' : '持续采样概况' }}</button>
+                    <button type="button" role="switch" :aria-checked="autoEnabled && autoGpuId === gpu.id && autoKind === 'pipelines'" :disabled="(probeBusy && !autoEnabled) || (autoEnabled && (autoGpuId !== gpu.id || autoKind !== 'pipelines'))" @click="toggleAuto(gpu.id, 'pipelines')">{{ autoEnabled && autoGpuId === gpu.id && autoKind === 'pipelines' ? '停止管线采样' : '持续采样管线' }}</button>
                   </div>
               </div>
               <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
@@ -264,7 +264,7 @@ function displayLabel(display) {
                     <div class="gpu-activity-track"><i :style="{ width: `${Math.max(0, Math.min(100, activityProbe.metrics?.[metric.key]?.mean_percent ?? 0))}%` }"></i></div>
                   </div>
                 </div>
-                <p>上次采样 <RollingValue :value="time(activityProbe.captured_at)" :amount="activityProbe.captured_at" /> · 窗口平均值，非实时读数。<router-link to="/detail">查看全部细分 ↗</router-link></p>
+                <p>上次采样 <RollingValue :value="time(activityProbe.captured_at)" :amount="activityProbe.captured_at" /> · 窗口平均值，非实时读数。持续模式每轮采集 5 秒，完成后休息至少 45 秒。<router-link to="/detail">查看全部细分 ↗</router-link></p>
               </template>
                 <p v-else class="gpu-activity-empty">这张卡尚无硬件活动采样。</p>
                 <p v-if="pipelineError" class="notice" role="alert">{{ pipelineError }}</p>
