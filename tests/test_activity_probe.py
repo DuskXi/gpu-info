@@ -45,7 +45,7 @@ class ActivityProbeTests(unittest.TestCase):
             metrics = parse_metrics(path)
             window = report_window(path)
         self.assertEqual(metrics["tensor_active"], {
-            "mean_percent": 10.0, "peak_percent": 30.0,
+            "mean_percent": 10.0, "p90_percent": 30.0, "peak_percent": 30.0,
             "active_samples": 1, "samples": 3,
         })
         self.assertEqual(metrics["compute_warps"]["peak_percent"], 50.0)

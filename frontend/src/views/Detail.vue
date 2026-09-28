@@ -285,14 +285,14 @@ function chooseProcess(key) {
       </div>
       <details ref="probeDetails" class="activity-probe-details">
         <summary>查看设备级采样细节 <span v-if="activityProbe">SM {{ number(activityProbe.metrics?.sm_active?.mean_percent, 1, '%') }} · Tensor {{ number(activityProbe.metrics?.tensor_active?.mean_percent, 1, '%') }}</span><span v-if="pipelineProbe">ALU {{ number(pipelineProbe.metrics?.alu?.mean_percent, 1, '%') }} · FMA Heavy {{ number(pipelineProbe.metrics?.fma_heavy?.mean_percent, 1, '%') }}</span><span v-if="probeError || pipelineError">采样失败 · 展开查看</span></summary>
-      <p class="activity-probe-intro">按需用 Nsight Systems 以 10 Hz 采集 5 秒。探针仅统计整卡，不会把其他程序的活动归给选中的训练进程。</p>
+      <p class="activity-probe-intro">按需用 Nsight Systems 采集 5 秒：概况 100 Hz，SM 管线 10 Hz。探针仅统计整卡，不会把其他程序的活动归给选中的训练进程。</p>
       <p v-if="probeError" class="notice" role="alert">{{ probeError }}</p>
       <div v-if="activityProbe" class="activity-grid activity-grid-detailed">
         <article v-for="metric in activityMetrics" :key="metric.key" class="activity-reading" :class="{ 'activity-reading-tensor': metric.key === 'tensor_active' }">
           <small class="activity-reading-group">{{ metric.group }}</small>
           <span>{{ metric.label }}</span>
           <strong><RollingValue :value="number(activityProbe.metrics?.[metric.key]?.mean_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.mean_percent" /></strong>
-          <small>窗口平均 · 峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
+          <small>窗口平均 <template v-if="activityProbe.metrics?.[metric.key]?.p90_percent !== undefined">· P90 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.p90_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.p90_percent" /> </template>· 峰值 <RollingValue :value="number(activityProbe.metrics?.[metric.key]?.peak_percent, 1, '%')" :amount="activityProbe.metrics?.[metric.key]?.peak_percent" /></small>
           <small>有活动的采样 <RollingValue :value="activityProbe.metrics?.[metric.key]?.active_samples ?? '—'" /> / <RollingValue :value="activityProbe.metrics?.[metric.key]?.samples ?? '—'" /></small>
         </article>
       </div>
@@ -304,7 +304,7 @@ function chooseProcess(key) {
         </div>
       </div>
       <p v-if="!activityProbe && !probeBusy" class="activity-probe-empty">尚无硬件采样。</p>
-      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}不同百分比不能相加。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
+      <p class="data-note">{{ activityProbe ? `GPU ${activityProbe.gpu_id} · ${new Date(activityProbe.captured_at * 1000).toLocaleTimeString('zh-CN', { hour12: false })} 的短时采样。` : '' }}P90 表示 90% 样本不超过该值；峰值仍是单个采样间隔的读数，不是瞬时峰值。不同百分比不能相加。计算派发和计算 warp 证明有计算任务，却不等于 FP32/整数 CUDA Core 利用率；Tensor 低也不能单独证明 CUDA Core 高。下方可另采整卡 FMA/ALU 管线；精确指令类型仍需逐 kernel 深度分析。0% 只表示采样窗口内未观测到活动。</p>
       <div class="pipeline-probe">
         <div class="pipeline-probe-heading"><strong>AD10x 指令管线</strong><span>单独按需采样 · GPU 整卡</span></div>
         <p class="activity-probe-intro">从实际执行的指令管线观察 Tensor、FMA、ALU 和 SFU/XU。FMA 也可执行部分整数乘法，XU 也处理类型转换；这些值不是精确的 FP32 核心利用率。各管线峰值基准不同，百分比不能相加。</p>
