@@ -20,9 +20,13 @@
 }
 * { box-sizing: border-box; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
-.rolling-value { display: inline-flex; align-items: baseline; white-space: pre; font-variant-numeric: tabular-nums; }
+.rolling-value { display: inline-flex; align-items: baseline; padding-block: .5em; white-space: pre; font-variant-numeric: tabular-nums; }
 .rolling-visual { display: inline-flex; align-items: baseline; white-space: pre; }
-.rolling-digit { display: inline-block; flex: none; width: 1ch; height: 1em; overflow: hidden; vertical-align: baseline; line-height: 1; }
+.rolling-digit { position: relative; display: inline-block; flex: none; width: 1ch; height: 1em; overflow: visible; vertical-align: baseline; line-height: 1; }
+/* Preserve the numeric baseline; the extra half-row at each edge fades outside it. */
+.rolling-window { position: absolute; inset: -.5em 0 auto; height: 2em; overflow: hidden; pointer-events: none;
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent);
+  mask-image: linear-gradient(to bottom, transparent, #000 25%, #000 75%, transparent); }
 .rolling-track { display: flex; flex-direction: column; width: 100%; line-height: 1; }
 .rolling-track > span { display: block; flex: none; height: 1em; line-height: 1em; text-align: center; }
 body { margin: 0; min-width: 320px; }

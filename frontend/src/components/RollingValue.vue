@@ -77,7 +77,10 @@ function glyph(token) {
   const position = states.get(token.key)?.position ?? token.digit
   const base = Math.floor(position)
   const wrap = number => ((number % 10) + 10) % 10
-  return { top: wrap(base), bottom: wrap(base + 1), offset: position - base }
+  const offset = position - base
+  // Fade unused neighbours to zero at integer positions so settled digits stay clean.
+  return { top: wrap(base), bottom: wrap(base + 1), offset,
+    topOpacity: Math.min(1, (1 - offset) * 4), bottomOpacity: Math.min(1, offset * 4) }
 }
 
 watch(() => [props.value, props.amount], reconcile, { immediate: true })
@@ -106,8 +109,11 @@ onUnmounted(() => {
     <span class="rolling-visual" aria-hidden="true">
       <template v-for="(token, index) in tokens" :key="index">
         <span v-if="token.digit !== undefined" class="rolling-digit">
-          <span class="rolling-track" :style="{ transform: `translateY(-${glyph(token).offset}em)` }">
-            <span>{{ glyph(token).top }}</span><span>{{ glyph(token).bottom }}</span>
+          <span class="rolling-window">
+            <span class="rolling-track" :style="{ transform: `translateY(${0.5 - glyph(token).offset}em)` }">
+              <span :style="{ opacity: glyph(token).topOpacity }">{{ glyph(token).top }}</span>
+              <span :style="{ opacity: glyph(token).bottomOpacity }">{{ glyph(token).bottom }}</span>
+            </span>
           </span>
         </span>
         <span v-else>{{ token.char }}</span>
