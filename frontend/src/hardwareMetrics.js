@@ -1,4 +1,8 @@
 export const hardwareGroups = [
+  { key: 'memory', label: '显存读写带宽', metrics: [
+    { key: 'dram_read', label: '显存读取', bandwidth: 'dram_read_estimated_bytes_per_second' },
+    { key: 'dram_write', label: '显存写入', bandwidth: 'dram_write_estimated_bytes_per_second' },
+  ] },
   { key: 'activity', label: 'SM / Tensor', metrics: [
     { key: 'sm_active', label: 'SM 活跃' }, { key: 'tensor_active', label: 'Tensor 活跃' },
   ] },
@@ -33,11 +37,11 @@ export function hardwareTrend(history, state, group, key, now) {
     if (source?.session_id !== state?.session_id || !Number.isFinite(value)
       || row.sampled_at < now - 60 || seen.has(row.sampled_at)) continue
     seen.add(row.sampled_at)
-    points.push({ t: row.sampled_at, value })
+    points.push({ t: row.sampled_at, value, epoch: row.epoch })
   }
   const max = Math.max(1, ...points.map(p => p.value))
   return points.map((point, i) => {
-    const command = i === 0 || point.t - points[i - 1].t > 3 ? 'M' : 'L'
+    const command = i === 0 || point.epoch !== points[i - 1].epoch || point.t - points[i - 1].t > 3 ? 'M' : 'L'
     return `${command}${Math.max(0, Math.min(240, (point.t - now + 60) * 4)).toFixed(1)},${(35 - point.value / max * 31).toFixed(1)}`
   }).join(' ')
 }

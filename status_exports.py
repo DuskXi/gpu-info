@@ -134,21 +134,31 @@ def render_status_markdown(frame: dict[str, Any]) -> str:
     lines += ["", "## 训练硬件观测", ""]
     sampling = frame.get("hardware_sampling") or {}
     lines.append(f"硬件采样：{_cell(sampling.get('state', 'off'))}；整卡数据，不归属进程。")
+    lines.append(f"模式：{_cell(sampling.get('mode'))}；活动组采样 {_reading(sampling.get('frequency_hz'), ' Hz')}；"
+                 f"发布间隔 {_reading(sampling.get('publish_interval_seconds'), ' 秒')}；"
+                 f"全指标同窗：{sampling.get('simultaneous_all_metrics', False)}。快速控制与文档：`/api/sampling-control`。")
     if sampling.get("error"):
         lines.append(f"采样错误：{_cell(sampling['error'])}")
     for name, group in (sampling.get("groups") or {}).items():
-        fresh = health["snapshot_fresh"] and sampling.get("enabled") and time.time() - group["sampled_at"] <= 3
+        fresh = health["snapshot_fresh"] and sampling.get("enabled") and time.time() - group["sampled_at"] <= sampling.get("freshness_budget_seconds", 3)
         lines += ["", f"### {_cell(name)} · {'实时' if fresh else '历史值 / 未采样间隔'}", "",
                   f"接收时间：{_time(group.get('sampled_at'))}；窗口有效观测 {_reading(group.get('observed_seconds'), ' 秒')}。", ""]
+        lines.append(f"同步组：{_cell(group.get('cohort'))}；窗口：{_cell(group.get('window_id'))}；距接收 {_reading(time.time() - group['sampled_at'], ' 秒')}。")
         for key, metric in group.get("metrics", {}).items():
             lines.append(f"- {_cell(key)}：{_reading(metric.get('value'))} {_cell(metric.get('unit'))}")
     for gpu in gpus:
         details = gpu.get("training_health") or {}
+        fast_bandwidth = frame.get("bandwidth_sampling") or {}
+        bandwidth = (fast_bandwidth.get("latest") if fast_bandwidth.get("enabled") and fast_bandwidth.get("gpu_id") == gpu.get("id") else None) or gpu.get("bandwidth") or {}
         lines += ["", f"GPU {_cell(gpu.get('id'))} NVML：",
                   f"- 瞬时功率：{_reading(details.get('instant_power_w'), ' W')}；能量差分功率：{_reading(details.get('energy_window_w'), ' W')}",
                   f"- 累计能量：{_reading(details.get('energy_total_j'), ' J')}；温度裕量：{_reading(details.get('temperature_margin_c'), ' °C')}",
                   f"- 功率限制时间占比：{_percent(details.get('power_limit_time_percent'))}；时钟原因原始值：{_reading(details.get('clock_reasons_raw'))}",
                   f"- 未知时钟原因位：{_reading(details.get('unknown_clock_reasons'))}；驱动保留：{_bytes(details.get('driver_reserved_bytes'))}"]
+        for direction in ("tx", "rx"):
+            lines.append(f"- PCIe {direction.upper()}：{_reading(bandwidth.get(f'pcie_{direction}_bytes_per_second'), ' B/s')} / {_percent(bandwidth.get(f'pcie_{direction}_percent'))}")
+        lines.append(f"- PCIe 分母：当前协商链路单方向编码后线速 {_reading(bandwidth.get('pcie_capacity_bytes_per_second'), ' B/s')}；采样时间 {_time(bandwidth.get('sampled_at'))}，不含数据包开销修正。")
+    lines.append("\nDRAM estimated_bytes_per_second 为 CUPTI 带宽百分比 × NVML 时钟/位宽推算的理论 DDR 带宽，仅为估算；不是直接字节计数。NVML PCIe 为独立 20 ms 驱动窗口。")
 
     lines += [
         "", "## 进程显存", "",
@@ -195,6 +205,11 @@ def render_status_markdown(frame: dict[str, Any]) -> str:
 
 # Prometheus text exposition 0.0.4. Names and help strings are fixed; labels are escaped.
 _METRICS = {
+    "gpu_info_hardware_estimated_bytes_per_second": "Estimated DRAM bandwidth, not a direct byte counter.",
+    "gpu_info_pcie_bytes_per_second": "NVML PCIe throughput; GPU TX/RX direction, 20 ms driver window.",
+    "gpu_info_pcie_ratio": "PCIe rate divided by current negotiated encoded line capacity per direction.",
+    "gpu_info_pcie_capacity_bytes_per_second": "Current negotiated PCIe line capacity after encoding, before packet overhead.",
+    "gpu_info_pcie_sample_timestamp_seconds": "NVML PCIe query wall time.",
     "gpu_info_hardware_sampling_enabled": "Whether hardware sampling is enabled in the captured frame.",
     "gpu_info_hardware_sample_timestamp_seconds": "Receive timestamp of a hardware metric group.",
     "gpu_info_hardware_sample_fresh": "Whether the group has fresh data, not a retained historical result.",
@@ -298,7 +313,7 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
     add("gpu_info_hardware_sampling_enabled", int(bool(sampling.get("enabled")) and health["snapshot_fresh"]))
     for group_name, group in (sampling.get("groups") or {}).items():
         labels = {"gpu": sampling.get("gpu_id"), "group": group_name}
-        fresh = bool(sampling.get("enabled")) and health["snapshot_fresh"] and time.time() - group["sampled_at"] <= 3
+        fresh = bool(sampling.get("enabled")) and health["snapshot_fresh"] and time.time() - group["sampled_at"] <= sampling.get("freshness_budget_seconds", 3)
         add("gpu_info_hardware_sample_timestamp_seconds", group.get("sampled_at"), labels)
         add("gpu_info_hardware_sample_fresh", int(fresh), labels)
         if fresh:
@@ -308,6 +323,7 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
                     "warp_instructions_per_second": "gpu_info_hardware_warp_instructions_per_second",
                     "thread_instructions_per_second": "gpu_info_hardware_thread_instructions_per_second",
                     "threads_per_warp_instruction": "gpu_info_hardware_active_threads_per_warp",
+                    "estimated_bytes_per_second": "gpu_info_hardware_estimated_bytes_per_second",
                 }[metric["unit"]]
                 value = ratio(metric.get("value")) if metric["unit"] == "percent" else metric.get("value")
                 add(name, value, {**labels, "metric": key})
@@ -332,6 +348,14 @@ def render_prometheus(frame: dict[str, Any], include_processes: bool = False) ->
         clocks = gpu.get("clocks") or {}
         bar1 = gpu.get("bar1") or {}
         details = gpu.get("training_health") or {}
+        fast = frame.get("bandwidth_sampling") or {}
+        bandwidth = (fast.get("latest") if fast.get("enabled") and fast.get("gpu_id") == gpu.get("id") else None) or gpu.get("bandwidth") or {}
+        add("gpu_info_pcie_sample_timestamp_seconds", bandwidth.get("sampled_at"), label)
+        if time.time() - bandwidth.get("sampled_at", 0) <= 3:
+            add("gpu_info_pcie_capacity_bytes_per_second", bandwidth.get("pcie_capacity_bytes_per_second"), label)
+            for direction in ("tx", "rx"):
+                add("gpu_info_pcie_bytes_per_second", bandwidth.get(f"pcie_{direction}_bytes_per_second"), {**label, "direction": direction})
+                add("gpu_info_pcie_ratio", ratio(bandwidth.get(f"pcie_{direction}_percent")), {**label, "direction": direction})
         for metric, key, as_ratio in (
             ("gpu_info_gpu_energy_joules_total", "energy_total_j", False),
             ("gpu_info_gpu_instant_power_watts", "instant_power_w", False),

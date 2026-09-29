@@ -6,7 +6,7 @@ import { bytes, number, percent, time } from '../format'
 import { memoryAccounts } from '../accounting'
 import { processPieGradient, processPieSliceAt, processVramComposition } from '../processVram'
 
-const { snapshot, history, now } = useMonitorData()
+const { snapshot, history, now, hardwareSampling, hardwareHistory } = useMonitorData()
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
 const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
@@ -227,7 +227,7 @@ function displayLabel(display) {
                 </div>
               </template>
             </div>
-            <HardwarePanel :gpu="gpu" :state="snapshot?.hardware_sampling" :history="history" :now="now / 1000" />
+            <HardwarePanel :gpu="gpu" :state="hardwareSampling" :history="hardwareHistory" :now="now / 1000" />
             <div v-if="processCompositions.get(gpu.id)?.slices.length" class="vram-composition">
               <div class="vram-visuals">
                 <figure class="vram-chart">

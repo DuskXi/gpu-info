@@ -1,4 +1,6 @@
 const DIGIT = /[0-9]/
+export const DIGIT_TRANSITION_SECONDS = 1.15
+export const DIGIT_BRAKE_SECONDS = 0.34
 
 export function magnitude(text) {
   const value = String(text ?? '')
@@ -40,14 +42,43 @@ export function targetForDigit(position, digit, direction) {
 }
 
 export function advanceDigit(state, seconds) {
-  const dt = Math.min(Math.max(seconds, 0), 0.05)
-  state.velocity += (state.target - state.position) * 100 * dt
-  state.velocity *= Math.exp(-17 * dt)
-  state.velocity = Math.max(-28, Math.min(28, state.velocity))
-  state.position += state.velocity * dt
-  if (Math.abs(state.target - state.position) < 0.012 && Math.abs(state.velocity) < 0.045) {
+  let dt = Math.min(Math.max(seconds, 0), 0.05)
+  if (state.position === state.target && state.velocity === 0) {
+    state.motion = null
+    state.brakeRemaining = 0
+    return false
+  }
+  if (!state.motion || state.motion.target !== state.target) {
+    // Retarget from the current position AND velocity. The 1.15 s transition
+    // intentionally overlaps the next 1 Hz reading; do not restart from rest.
+    const reversing = state.velocity * (state.target - state.position) < 0
+    state.brakeRemaining = reversing && Math.abs(state.velocity) > 0.02 ? DIGIT_BRAKE_SECONDS : 0
+    state.motion = { target: state.target, start: state.position, initialVelocity: state.velocity,
+      elapsed: 0, duration: DIGIT_TRANSITION_SECONDS - state.brakeRemaining }
+  }
+  if (state.brakeRemaining > 0) {
+    const used = Math.min(dt, state.brakeRemaining)
+    const velocity = state.velocity * (1 - used / state.brakeRemaining)
+    state.position += (state.velocity + velocity) / 2 * used
+    state.velocity = velocity
+    state.brakeRemaining = Math.max(0, state.brakeRemaining - used)
+    dt -= used
+    if (state.brakeRemaining > 0) return true
+    state.motion.start = state.position
+    state.motion.initialVelocity = 0
+  }
+  const motion = state.motion
+  motion.elapsed = Math.min(motion.duration, motion.elapsed + dt)
+  const t = motion.elapsed / motion.duration
+  const distance = motion.target - motion.start
+  const tangent = motion.initialVelocity * motion.duration
+  // Cubic Hermite curve: preserve incoming velocity and settle at zero velocity.
+  state.position = motion.start + distance * (3*t*t - 2*t*t*t) + tangent * (t*t*t - 2*t*t + t)
+  state.velocity = (distance * (6*t - 6*t*t) + tangent * (3*t*t - 4*t + 1)) / motion.duration
+  if (t >= 1) {
     state.position = state.target
     state.velocity = 0
+    state.motion = null
   }
   return state.velocity !== 0 || state.position !== state.target
 }

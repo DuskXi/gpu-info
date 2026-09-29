@@ -14,7 +14,7 @@ import ProcessPicker from '../components/ProcessPicker.vue'
 
 ChartJS.register(CategoryScale, LinearScale, LogarithmicScale, PointElement, LineElement, Tooltip, Legend)
 
-const { snapshot, history, now } = useMonitorData()
+const { snapshot, history, now, hardwareSampling, hardwareHistory } = useMonitorData()
 const mode = ref('gpu')
 const selectedGpu = ref('all')
 const selectedProcess = ref('')
@@ -178,7 +178,7 @@ const chartOptions = computed(() => ({
             const mantissa = numeric / 10 ** Math.floor(Math.log10(numeric))
             if (![1, 2, 5].some(mark => Math.abs(mantissa - mark) < 0.001)) return ''
           }
-          return `${value} ${activeMetric.value?.unit ?? ''}`
+          return `${Number(Number(value).toFixed(3))} ${activeMetric.value?.unit ?? ''}`
         },
       },
       border: { display: false },
@@ -226,8 +226,8 @@ function chooseProcess(key) {
 
     <section class="section-block">
       <div class="section-heading"><div><p class="eyebrow">TRAINING / HARDWARE COUNTERS</p><h2>计算单元与训练效率</h2></div></div>
-      <HardwarePanel v-for="gpu in gpus" :key="gpu.id" :gpu="gpu" :state="snapshot?.hardware_sampling" :history="history" :now="now / 1000" detailed />
-      <LegacyActivity :gpus="gpus" :sampling="snapshot?.hardware_sampling" />
+      <HardwarePanel v-for="gpu in gpus" :key="gpu.id" :gpu="gpu" :state="hardwareSampling" :history="hardwareHistory" :now="now / 1000" detailed />
+      <LegacyActivity :gpus="gpus" :sampling="hardwareSampling" />
     </section>
 
     <div class="mode-tabs" role="tablist" aria-label="分析对象">

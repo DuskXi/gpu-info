@@ -26,6 +26,8 @@ function settle() {
   for (const state of states.values()) {
     state.position = state.target
     state.velocity = 0
+    state.brakeRemaining = 0
+    state.motion = null
   }
   tick.value++
 }

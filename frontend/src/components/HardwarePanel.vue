@@ -5,7 +5,7 @@ import { hardwareGroups, hardwareTrend } from '../hardwareMetrics'
 
 const props = defineProps({ gpu: Object, state: Object, history: { type: Array, default: () => [] },
   now: Number, detailed: Boolean })
-const mode = ref('all')
+const mode = ref('compute')
 const pending = ref(false)
 const error = ref('')
 const own = computed(() => props.state?.gpu_id === props.gpu.id)
@@ -13,11 +13,22 @@ const active = computed(() => own.value && props.state?.enabled)
 const health = computed(() => props.gpu.training_health ?? {})
 const groups = computed(() => own.value ? props.state.groups ?? {} : {})
 const selectedGroups = computed(() => hardwareGroups.filter(group =>
-  mode.value === 'all' || mode.value === group.key || groups.value[group.key]))
+  ['all', 'diagnostic'].includes(mode.value) || (mode.value === 'compute' && ['pipelines', 'tensor', 'memory'].includes(group.key)) || mode.value === group.key))
+const bandwidthState = computed(() => props.state?.bandwidth_sampling)
+const bandwidthActive = computed(() => bandwidthState.value?.enabled && bandwidthState.value?.gpu_id === props.gpu.id)
+const bandwidth = computed(() => bandwidthActive.value ? bandwidthState.value.latest ?? {} : props.gpu.bandwidth ?? {})
+const bandwidthStale = computed(() => (props.now ?? Date.now() / 1000) - (bandwidth.value.sampled_at ?? 0) > (bandwidthActive.value ? 2 : 3))
+const gbps = value => number(value == null ? null : value / 1e9, 2, ' GB/s')
+const samplingNote = computed(() => {
+  const selection = active.value ? props.state.mode : mode.value
+  if (selection === 'compute') return '20 Hz 同窗采样 · 约 250 ms 发布 · FMA / ALU / SFU / Tensor 指令与显存读写同步。'
+  if (selection === 'diagnostic') return '活动组内 20 Hz · 约 250 ms 发布 · 四组快速轮换，每组约 500 ms；不同组并非同时采集。'
+  return '10 Hz 采样 · 每秒发布；全部模式每组约 3 秒轮换，固定组连续采样。'
+})
 watch(() => props.state, value => { if (value?.enabled && own.value) mode.value = value.mode }, { immediate: true })
 function fresh(group) {
   return active.value && Number.isFinite(groups.value[group]?.sampled_at)
-    && (props.now ?? Date.now() / 1000) - groups.value[group].sampled_at <= 3
+    && (props.now ?? Date.now() / 1000) - groups.value[group].sampled_at <= Math.max(2, props.state?.freshness_budget_seconds ?? 3)
 }
 function value(group, key) { return groups.value[group]?.metrics?.[key]?.value }
 function rate(group, key) {
@@ -49,6 +60,16 @@ async function toggle() {
   } catch (cause) { error.value = cause.message }
   finally { pending.value = false }
 }
+async function toggleBandwidth() {
+  pending.value = true
+  error.value = ''
+  try {
+    const response = await fetch(`/api/sampling-control?action=${bandwidthActive.value ? 'stop' : 'start'}&target=bandwidth&gpu=${props.gpu.id}`, { method: 'POST' })
+    const result = await response.json()
+    if (!response.ok) throw new Error(result.detail || `HTTP ${response.status}`)
+  } catch (cause) { error.value = cause.message }
+  finally { pending.value = false }
+}
 </script>
 
 <template>
@@ -57,6 +78,8 @@ async function toggle() {
       <div><span class="label">GPU {{ gpu.id }} · 训练硬件观测</span><small>整卡性能计数器</small></div>
       <div class="hardware-controls">
         <select v-model="mode" :disabled="state?.enabled || pending" :aria-label="`GPU ${gpu.id} 硬件指标组`">
+          <option value="compute">同步 · 计算管线 / 显存读写</option>
+          <option value="diagnostic">快速诊断 · 全部指标</option>
           <option value="all">轮换全部指标</option>
           <option v-for="group in hardwareGroups" :key="group.key" :value="group.key">连续 · {{ group.label }}</option>
         </select>
@@ -70,20 +93,28 @@ async function toggle() {
     <p class="hardware-status">{{ active ? state.state === 'starting' ? '正在准备计数器…' : '采样中' : '硬件采样已关闭' }} · {{ evidence }}</p>
     <div v-if="active || Object.keys(groups).length" class="hardware-groups">
       <section v-for="group in selectedGroups" :key="group.key" class="hardware-group" :class="{ 'hardware-cached': !fresh(group.key) }">
-        <header><strong>{{ group.label }}</strong><small>{{ !groups[group.key] ? '尚未采到' : fresh(group.key) ? '实时' : active ? state.mode === 'all' ? '轮换间隔 · 保留上次值' : '暂未更新 · 保留上次值' : '已停止 · 最后读数' }}<template v-if="groups[group.key]"> · {{ time(groups[group.key].sampled_at) }}</template></small></header>
+        <header><strong>{{ group.label }}</strong><small>{{ !groups[group.key] ? '尚未采到' : !active ? '已停止 · 最后读数' : !fresh(group.key) ? '旧值 · 等待更新' : groups[group.key].sampling_active ? '当前采样组' : '轮换间隔' }}<template v-if="groups[group.key]"> · {{ time(groups[group.key].sampled_at) }} · {{ number(Math.max(0, (now ?? Date.now() / 1000) - groups[group.key].sampled_at), 1, ' s 前') }}</template></small></header>
         <div class="hardware-readings">
           <article v-for="metric in group.metrics" :key="metric.key" :title="groups[group.key]?.metrics?.[metric.key]?.counter">
             <span>{{ metric.label }}</span>
             <strong><RollingValue :value="metric.rateOnly ? rate(group.key, metric.key) : number(value(group.key, metric.key), 1, metric.lanes ? ' /32' : '%')" :amount="value(group.key, metric.key)" /></strong>
             <small v-if="metric.lanes">指令内部有效线程，非核心占用率</small>
             <small v-if="metric.rate"><RollingValue :value="rate(group.key, metric.rate)" :amount="value(group.key, metric.rate)" /></small>
+            <small v-if="metric.bandwidth">≈ <RollingValue :value="gbps(value(group.key, metric.bandwidth))" :amount="value(group.key, metric.bandwidth)" /> · 估算</small>
             <svg v-if="detailed" viewBox="0 0 240 38" preserveAspectRatio="none" role="img" :aria-label="`${metric.label} 最近一分钟趋势，空白为未采样`"><path :d="hardwareTrend(history, state, group.key, metric.key, now ?? Date.now() / 1000)" /></svg>
           </article>
         </div>
         <small v-if="detailed && groups[group.key]" class="hardware-window">窗口内有效观测 <RollingValue :value="number(groups[group.key].observed_seconds, 2, ' s')" :amount="groups[group.key].observed_seconds" /> · <RollingValue :value="String(groups[group.key].samples)" :amount="groups[group.key].samples" /> 样本 · 未完成样本 <RollingValue :value="String(groups[group.key].incomplete_samples)" :amount="groups[group.key].incomplete_samples" /></small>
       </section>
     </div>
-    <p class="data-note hardware-note">10 Hz 采样 · 每秒更新 · 最近 3 秒的时间加权均值。轮换模式每组约 3 秒，其他组保留带时间的旧值；固定组可连续观察。Ginst/s 为十亿条指令/秒，除明确标注的线程指令外均为 warp 指令。不是 TFLOPS。各管线百分比不能相加，也不能归属到某个进程。</p>
+    <p class="data-note hardware-note">{{ samplingNote }} 页面数值约每秒更新，曲线保留高频点。显示本轮最近最多 3 秒的时间加权均值，切组会重置窗口。Ginst/s 为十亿条指令/秒，除标注线程指令外均为 warp 指令，不是 TFLOPS。各管线百分比不能相加，也不能归属某个进程。</p>
+    <section class="bandwidth-section">
+      <header class="hardware-heading"><strong>PCIe 传输</strong><button type="button" class="bandwidth-toggle" role="switch" :aria-checked="Boolean(bandwidthActive)" :disabled="pending" @click="toggleBandwidth">{{ bandwidthActive ? '关闭 10 Hz 快速采样' : '开启 10 Hz 快速采样' }}</button></header>
+      <div class="hardware-readings">
+        <article v-for="direction in ['tx', 'rx']" :key="direction"><span>{{ direction === 'tx' ? 'TX · GPU 发出' : 'RX · GPU 接收' }}{{ bandwidthStale ? ' · 旧值' : '' }}</span><strong><RollingValue :value="gbps(bandwidth[`pcie_${direction}_bytes_per_second`])" :amount="bandwidth[`pcie_${direction}_bytes_per_second`]" /></strong><small><RollingValue :value="number(bandwidth[`pcie_${direction}_percent`], 2, '%')" :amount="bandwidth[`pcie_${direction}_percent`]" /> · 当前链路容量</small></article>
+      </div>
+      <p class="data-note">Gen {{ bandwidth.pcie_generation ?? '—' }} × {{ bandwidth.pcie_width ?? '—' }} · 单向容量 {{ gbps(bandwidth.pcie_capacity_bytes_per_second) }} · {{ bandwidthActive ? '10 Hz 轮询' : '随基础监控更新' }} · NVML 独立 20 ms 窗口，非连续覆盖；分母未扣数据包开销。</p>
+    </section>
     <div class="hardware-health">
       <div><span>瞬时功率</span><strong><RollingValue :value="number(health.instant_power_w, 1, ' W')" :amount="health.instant_power_w" /></strong></div>
       <div><span>能量差分功率</span><strong><RollingValue :value="number(health.energy_window_w, 1, ' W')" :amount="health.energy_window_w" /></strong></div>
@@ -96,6 +127,7 @@ async function toggle() {
       <p>时钟原因：{{ clockReasons }}。软件 / 硬件温度限制时间占比：<RollingValue :value="number(health.software_thermal_time_percent, 1, '%')" :amount="health.software_thermal_time_percent" /> / <RollingValue :value="number(health.hardware_thermal_time_percent, 1, '%')" :amount="health.hardware_thermal_time_percent" />。</p>
       <p>PCIe Gen <RollingValue :value="String(health.pcie_generation ?? '—')" :amount="health.pcie_generation" /> × <RollingValue :value="String(health.pcie_width ?? '—')" :amount="health.pcie_width" /> · 重传累计 <RollingValue :value="String(health.pcie_replay_count ?? '—')" :amount="health.pcie_replay_count" />。</p>
       <p>NVML 状态持续更新，不依赖上方开关。CUDA 普通算术/整数管线有指令，能够证明它们被使用；不等于准确的 FP32 核心利用率。L1 低、PCIe 或显存带宽未满，都不能单独排除延迟、同步和指令依赖瓶颈。采样缓冲为 8 MiB，额外总显存仍需按实际负载观测。</p>
+      <p>显存百分比为 CUPTI sustained peak 口径；GB/s 为百分比乘 NVML 显存时钟 × 2 × 位宽 / 8 的理论 DDR 带宽估算，并非直接字节计数。Agent 控制和 JSON 请求文档：<a href="/api/sampling-control" target="_blank" rel="noopener">/api/sampling-control</a>。</p>
     </details>
   </section>
 </template>
@@ -121,6 +153,9 @@ async function toggle() {
 .hardware-readings svg { width: 100%; height: 38px; display: block; }
 .hardware-readings path { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .hardware-note { margin: 16px 0; line-height: 1.7; }
+.bandwidth-section { border-top: 1px solid var(--line); padding-top: 14px; margin-bottom: 18px; }
+.bandwidth-section header { font-size: 12px; margin-bottom: 12px; }
+.bandwidth-toggle { border: 1px solid var(--line); color: var(--accent); background: var(--panel); padding: 6px 10px; cursor: pointer; font-size: 11px; }
 .hardware-health { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; border-top: 1px solid var(--line); padding-top: 14px; }
 .hardware-health strong { display: block; margin-top: 5px; font-size: 18px; font-weight: 500; }
 .hardware-extra { font-size: 11px; color: var(--muted); line-height: 1.8; margin-top: 16px; }

@@ -8,6 +8,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
@@ -60,10 +61,19 @@ struct Profile {
 double wallTime() {
     return std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
+int setting(const char* name, int fallback, int minimum, int maximum) {
+    const char* raw = std::getenv(name);
+    int value = raw ? std::stoi(raw) : fallback;
+    if (value < minimum || value > maximum) throw std::runtime_error(std::string("invalid ") + name);
+    return value;
+}
 
 int main(int argc, char** argv) {
     try {
         if (argc < 3) throw std::runtime_error("usage: cupti_stream GPU group=metric,metric [group=...]");
+        const int intervalMs = setting("GPU_INFO_PM_INTERVAL_MS", 100, 50, 100);
+        const int publishMs = setting("GPU_INFO_PM_PUBLISH_MS", 1000, 250, 1000);
+        const int batchesPerGroup = setting("GPU_INFO_PM_BATCHES_PER_GROUP", 3, 1, 10);
         if (cuInit(0) != CUDA_SUCCESS) throw std::runtime_error("CUDA init failed");
         CUdevice device = 0;
         if (std::string(argv[1]).find(':') != std::string::npos) {
@@ -122,7 +132,7 @@ int main(int argc, char** argv) {
             auto& p = profiles[group];
             CUpti_PmSampling_SetConfig_Params config{CUpti_PmSampling_SetConfig_Params_STRUCT_SIZE};
             config.pPmSamplingObject = session.sampler; config.pConfig = p.config.data(); config.configSize = p.config.size();
-            config.hardwareBufferSize = 8 * 1024 * 1024; config.samplingInterval = 100000000;
+            config.hardwareBufferSize = 8 * 1024 * 1024; config.samplingInterval = uint64_t(intervalMs) * 1000000;
             config.triggerMode = CUPTI_PM_SAMPLING_TRIGGER_MODE_GPU_TIME_INTERVAL; CALL(cuptiPmSamplingSetConfig, config);
             CUpti_PmSampling_GetCounterDataSize_Params size{CUpti_PmSampling_GetCounterDataSize_Params_STRUCT_SIZE};
             size.pPmSamplingObject = session.sampler; size.pMetricNames = p.metrics.data(); size.numMetrics = p.metrics.size(); size.maxSamples = 128;
@@ -133,8 +143,10 @@ int main(int argc, char** argv) {
             CUpti_PmSampling_Start_Params start{CUpti_PmSampling_Start_Params_STRUCT_SIZE};
             start.pPmSamplingObject = session.sampler; CALL(cuptiPmSamplingStart, start); session.started = true;
             int emptyBatches = 0;
-            for (int batch = 0; running && (profiles.size() == 1 || batch < 3); ++batch) {
-                for (int tenth = 0; running && tenth < 10; ++tenth) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            for (int batch = 0; running && (profiles.size() == 1 || batch < batchesPerGroup); ++batch) {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(publishMs);
+                while (running && std::chrono::steady_clock::now() < deadline)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(10));
                 CUpti_PmSampling_DecodeData_Params decode{CUpti_PmSampling_DecodeData_Params_STRUCT_SIZE};
                 decode.pPmSamplingObject = session.sampler; decode.pCounterDataImage = p.data.data(); decode.counterDataImageSize = p.data.size();
                 CALL(cuptiPmSamplingDecodeData, decode);

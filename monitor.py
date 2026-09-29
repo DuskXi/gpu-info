@@ -17,6 +17,7 @@ import psutil
 
 from display_state import read_display_state
 from training_health import TrainingHealth
+from bandwidth_sampling import capture_bandwidth
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,7 @@ class GPUMonitor:
                 power = self._read(lambda: nv.nvmlDeviceGetPowerUsage(handle))
                 power_limit = self._read(lambda: nv.nvmlDeviceGetEnforcedPowerLimit(handle))
                 bar1 = self._read(lambda: nv.nvmlDeviceGetBAR1MemoryInfo(handle))
+                bandwidth = capture_bandwidth(nv, handle)
                 result["gpus"].append({
                     "id": index, "name": name, "driver_version": driver,
                     "memory": {
@@ -230,14 +232,9 @@ class GPUMonitor:
                         "encoder": self._read(lambda: nv.nvmlDeviceGetEncoderUtilization(handle)[0]),
                         "decoder": self._read(lambda: nv.nvmlDeviceGetDecoderUtilization(handle)[0]),
                     },
-                    "pcie": {
-                        "tx": self._read(lambda: nv.nvmlDeviceGetPcieThroughput(
-                            handle, nv.NVML_PCIE_UTIL_TX_BYTES
-                        )),
-                        "rx": self._read(lambda: nv.nvmlDeviceGetPcieThroughput(
-                            handle, nv.NVML_PCIE_UTIL_RX_BYTES
-                        )),
-                    },
+                    "pcie": {"tx": bandwidth["pcie_tx_kib_per_second"],
+                             "rx": bandwidth["pcie_rx_kib_per_second"]},
+                    "bandwidth": bandwidth,
                     "bar1": {
                         "total": getattr(bar1, "bar1Total", None),
                         "used": getattr(bar1, "bar1Used", None),

@@ -59,8 +59,16 @@ pnpm dev
 | `POST /api/activity-probe?gpu=0[&duration=2]` | 采集 1–5 秒设备级 GPU 硬件活动（默认 5 秒）；需要本机 Nsight Systems CLI 和性能计数器权限 |
 | `POST /api/activity-probe?gpu=0&kind=pipelines` | 采集 AD10x 的 Tensor、FMA Light/Heavy、ALU、SFU 管线吞吐 |
 | `GET /api/activity-probe[?kind=pipelines]` | 最近一次对应类型的采样结果；服务端重启后清空 |
-| `POST /api/hardware-sampling?enabled=true&gpu=0&mode=all` | 开启设备级 CUPTI 连续采样；mode 可为 all/activity/cache/pipelines/tensor/scalar |
+| `GET /api/sampling-control` | JSON 格式的统一采样控制请求文档，无参数不改变状态 |
+| `GET /api/sampling-control?action=state` | 所有持续采样开关、实际状态及错误 |
+| `POST /api/sampling-control?action=start&target=all&gpu=0&mode=compute&replace=true` | 开启基础监控、同窗硬件计数器和 PCIe 快速采样；支持分别控制 hardware/bandwidth/telemetry |
+| `POST /api/sampling-control?action=stop&target=all` | 关闭全部持续采样；有限时长的 Nsight capture 自动结束 |
+| `POST /api/hardware-sampling?enabled=true&gpu=0&mode=compute` | 兼容硬件开关；mode 可为 compute/diagnostic/all/activity/cache/pipelines/tensor/scalar/memory |
 | `POST /api/hardware-sampling?enabled=false` | 停止共享的连续采样，释放性能计数器 |
+| `GET /api/hardware-sampling` | 直接读取快速硬件缓存，附带 PCIe 快速采样状态 |
+| `GET /api/hardware-sampling/samples?after=0&limit=100` | 原始 CUPTI 样本环形缓存，支持 sequence/session_id 增量游标 |
+| `GET /api/bandwidth-sampling` | 10 Hz NVML PCIe 采样状态及最新值 |
+| `GET /api/bandwidth-sampling/samples?after=0&limit=100` | PCIe 增量样本；独立会话与游标 |
 | `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
 | `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
 
@@ -115,9 +123,11 @@ Windows 上需要 CUDA/CUPTI 12.6 和 MSVC x64 编译工具：
 
 默认 helper 位于 `native/bin/cupti_stream.exe`（生成文件不入 Git），CUPTI DLL 默认路径为 CUDA 12.6 的 `extras/CUPTI/lib64`。可以通过 `GPU_INFO_PM_HELPER` / `GPU_INFO_CUPTI_PATH` 指定位置。未构建、不支持或无权限时返回明确错误，NVML/进程监控继续运行。指标组为本机 AD102 实测组合，其他架构需要通过配置和解码验证，不能保证同名指标可用。
 
-首页和趋势页共用服务器开关、设备和模式，浏览器刷新或换页不会重启采样。固定组以 10 Hz 采集、约每秒发布，采用最近 3 秒**已观测区间**的时间加权均值。全部轮换时每组约 3 秒，约 16–18 秒走完五组；离开某组后保留历史值和时间，曲线在未采样区间断开。最后一帧接收超过 3 秒会被标为非实时；过期硬件值不进入 Prometheus 数值样本。
+首页和趋势页共用服务器开关、设备和模式，浏览器刷新或换页不会重启采样。新增 `compute` 同窗模式：FMA/ALU/SFU、Tensor 指令和显存读写共 11 个计数器以 20 Hz 采集、约 250 ms 发布。`diagnostic` 将完整指标分成四个物理组，每组约 500 ms 快速轮换，20 Hz 仅指活动组内频率，不是所有指标同时达到 20 Hz。固定单组仍为 10 Hz、约每秒发布；`all` 每组约 3 秒慢轮换六组。均值使用本轮最近最多 3 秒**已观测区间**，切组重置窗口；曲线跨 epoch 断开。API 标注每组时间、窗口 ID、数据年龄与是否已过期。
 
-五组：SM/Tensor 活跃、L1/L2/warp、FMA/ALU/SFU 占用与 warp 指令速率、Tensor warp 指令速率、FMA Lite 实际启用线程指令与有效线程数。`Ginst/s` 表示十亿条指令每秒；线程和 warp 口径分别标注。普通浮点管线的执行证据不能用于推断某个 PID、TFLOPS、同时忙碌的 CUDA 核心数或精确 FP32 利用率。有效线程数为同窗口线程指令数 / warp 指令数，范围 0–32；没有指令时不可用，不能把它称为核心占用率。
+页面数值约每秒更新一次，快速缓存和趋势点仍保留约 250 ms 的发布频率；开关、错误状态立即响应。全局数字单次滚动约 1.15 秒，稍长于显示更新周期；新目标继承当前位置和速度，同向继续加减速，反向先用约 340 ms 渐进制动再掉头（计入 1.15 秒）。后台或不可见数字、减少动态效果偏好仍直接落到目标值，避免多余动画。
+
+六个显示组：SM/Tensor 活跃、L1/L2/warp、FMA/ALU/SFU 占用与 warp 指令速率、Tensor warp 指令速率、FMA Lite 实际启用线程指令与有效线程数、显存读写带宽。`Ginst/s` 表示十亿条指令每秒；线程和 warp 口径分别标注。普通浮点管线的执行证据不能用于推断某个 PID、TFLOPS、同时忙碌的 CUDA 核心数或精确 FP32 利用率。有效线程数为同窗口线程指令数 / warp 指令数，范围 0–32；没有指令时不可用，不能把它称为核心占用率。
 
 采样结果经 `TelemetryStore` 一并进入 WebSocket、history、status.json、status.md、metrics。硬件组各自保留 GPU 原始时间区间、接收时间、有效观测时长、样本数和未完成样本数。NVML 另外提供累计能量、能量差分功率、瞬时功率、温度裕量、限制时间比例、原始/未知时钟原因、驱动保留显存及 PCIe 链路状态。缺失字段为 null；能量计数回退时丢弃该次差分。
 
@@ -126,3 +136,5 @@ helper 不创建 CUDA context，不执行 CUDA 工作负载，显式使用一个
 已验证的开销和 API 限制见 [训练 API 调查](benchmarks/nvidia-training-apis.md)。8 MiB 是指定缓冲大小，不是所有驱动资源的总显存保证。
 
 Tensor 按精度统计运算量、算子形状关联及时间线缓冲控制的进一步验证见 [计算量与实现效率调查](benchmarks/kernel-efficiency-investigation.md)。其中 Range 配置验证不是实时 TFLOPS 读数；新增离线探针不初始化 CUDA，也不进入训练进程。
+
+同步/轮换的实测边界、PCIe/显存带宽口径和 Agent 接入示例见 [高频采样与控制 API](benchmarks/sampling-control.md)。显存 GB/s 是明确标注的估算，PCIe GB/s 来自 NVML 字节吞吐。所有新值进入根路径状态导出；Agent 需要低延迟时使用直接缓存和增量样本端点。

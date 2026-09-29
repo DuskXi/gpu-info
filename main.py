@@ -13,13 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from activity_probe import ActivityProbe, ProbeError
 from monitor import monitor
 from pm_sampling import PMSampling
+from bandwidth_sampling import BandwidthSampling, memory_reference
+from sampling_control import request_document
 from status_exports import render_prometheus, render_status_markdown, status_message
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,10 @@ class TelemetryStore:
         self._sequence = 0
         self.stream_id = uuid.uuid4().hex
         self.activity_probe = ActivityProbe()
-        self.pm_sampling = PMSampling(self.activity_probe._lock)
+        self.pm_sampling = PMSampling(self.activity_probe._lock, lambda gpu: memory_reference(
+            monitor.nvml, monitor.nvml.nvmlDeviceGetHandleByIndex(gpu)))
+        self.bandwidth_sampling = BandwidthSampling(monitor.nvml)
+        self.telemetry_enabled = True
         self.latest_activity: dict[str, Any] | None = None
         self.latest_pipeline_activity: dict[str, Any] | None = None
         self.event_path = event_path or Path(__file__).parent / "data" / "display-events.jsonl"
@@ -163,6 +168,8 @@ class TelemetryStore:
         return context[:5]
 
     async def poll(self) -> None:
+        if not self.telemetry_enabled:
+            return
         if self._pending is None:
             self._pending = self.executor.submit(monitor.capture)
         try:
@@ -178,8 +185,11 @@ class TelemetryStore:
             self._pending = None
             return
         self._pending = None
+        if not self.telemetry_enabled:
+            return
         self._record_display(payload)
         payload["hardware_sampling"] = self.pm_sampling.snapshot()
+        payload["bandwidth_sampling"] = self.bandwidth_sampling.snapshot()
         self._sequence += 1
         frame = TelemetryFrame(self.stream_id, self._sequence, time.time(), payload)
         self.history.append(frame)
@@ -206,6 +216,7 @@ class TelemetryStore:
 
     def close(self) -> None:
         self.pm_sampling.stop()
+        self.bandwidth_sampling.stop()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self._pending is None or self._pending.done():
             monitor.close()
@@ -312,11 +323,30 @@ async def display_events(limit: int = Query(default=50, ge=1, le=200)) -> list[d
     return list(store.display_events)[-limit:]
 
 
+@app.get("/api/hardware-sampling")
+async def hardware_sampling_state() -> Response:
+    # Reads the same collector as TelemetryStore, without waiting for the 1 Hz NVML frame.
+    return Response(json.dumps({**store.pm_sampling.snapshot(),
+                               "bandwidth_sampling": store.bandwidth_sampling.snapshot()}, ensure_ascii=False),
+                    media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/hardware-sampling/samples")
+async def hardware_sampling_samples(
+    after: int = Query(default=0, ge=0), limit: int = Query(default=100, ge=1, le=240),
+    session_id: str | None = Query(default=None, max_length=64),
+) -> Response:
+    result = store.pm_sampling.samples(after, limit, session_id)
+    return Response(json.dumps(result, ensure_ascii=False), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/hardware-sampling")
 async def hardware_sampling(
     enabled: bool,
     gpu: int = Query(default=0, ge=0),
-    mode: Literal["all", "activity", "cache", "pipelines", "tensor", "scalar"] = "all",
+    mode: Literal["all", "activity", "cache", "pipelines", "tensor", "scalar", "memory", "diagnostic", "compute"] = "all",
+    replace: bool = False,
 ) -> dict[str, Any]:
     if not enabled:
         return await asyncio.to_thread(store.pm_sampling.stop)
@@ -325,9 +355,65 @@ async def hardware_sampling(
         raise HTTPException(status_code=404, detail="GPU not found")
     try:
         return await asyncio.to_thread(store.pm_sampling.start, gpu,
-                                      device.get("device_info", {}).get("pci_bus_id"), mode)
+                                      device.get("device_info", {}).get("pci_bus_id"), mode, replace)
     except ProbeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/bandwidth-sampling")
+async def bandwidth_state() -> Response:
+    return Response(json.dumps(store.bandwidth_sampling.snapshot()), media_type="application/json",
+                    headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/bandwidth-sampling/samples")
+async def bandwidth_samples(after: int = Query(default=0, ge=0),
+                            limit: int = Query(default=100, ge=1, le=600),
+                            session_id: str | None = Query(default=None, max_length=64)) -> Response:
+    return Response(json.dumps(store.bandwidth_sampling.samples(after, limit, session_id)),
+                    media_type="application/json", headers={"Cache-Control": "no-store"})
+
+
+@app.api_route("/api/sampling-control", methods=["GET", "POST"])
+async def sampling_control(request: Request, response: Response,
+        action: Literal["state", "start", "stop", "capture"] | None = None,
+        target: Literal["hardware", "bandwidth", "telemetry", "nsight", "all"] = "hardware",
+        gpu: int = Query(default=0, ge=0),
+        mode: Literal["all", "activity", "cache", "pipelines", "tensor", "scalar", "memory", "diagnostic", "compute"] = "compute",
+        replace: bool = False, kind: Literal["general", "pipelines"] = "general",
+        duration: int = Query(default=5, ge=1, le=5)) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "no-store"
+    if not request.query_params:
+        return request_document()
+    if set(request.query_params) - set(request_document()["parameters"]):
+        raise HTTPException(status_code=422, detail="未知参数；无参数 GET 获取请求文档")
+    if action is None:
+        raise HTTPException(status_code=422, detail="缺少 action")
+    if action != "state" and request.method != "POST":
+        raise HTTPException(status_code=405, detail="控制操作必须使用 POST")
+    if action == "capture" and target == "nsight":
+        return await activity_probe(gpu, kind, duration)
+    if action != "state":
+        if action == "capture" or target == "nsight":
+            raise HTTPException(status_code=422, detail="nsight 仅支持有界 capture；持续开关支持 start/stop")
+        enabled = action == "start"
+        # Validate device before changing any switch. Hardware starts first so a busy
+        # profiler cannot accidentally change unrelated switches.
+        if enabled and target in ("all", "hardware", "bandwidth"):
+            if not any(row["id"] == gpu for row in latest_frame().payload.get("gpus", [])):
+                raise HTTPException(status_code=404, detail="GPU not found")
+        if target in ("all", "hardware"):
+            await hardware_sampling(enabled, gpu, mode, replace)
+        if target in ("all", "bandwidth"):
+            try:
+                await asyncio.to_thread(store.bandwidth_sampling.start, gpu) if enabled else await asyncio.to_thread(store.bandwidth_sampling.stop)
+            except Exception as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if target in ("all", "telemetry"):
+            store.telemetry_enabled = enabled
+    return {"checked_at": time.time(), "telemetry": {"enabled": store.telemetry_enabled, "frequency_hz": 1},
+            "hardware": store.pm_sampling.snapshot(), "bandwidth": store.bandwidth_sampling.snapshot(),
+            "profiler_busy": store.activity_probe._lock.locked()}
 
 
 @app.websocket("/api/ws")

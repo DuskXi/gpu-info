@@ -21,8 +21,46 @@ test('a reversed update brakes before the wheel turns around', () => {
   assert.ok(state.position > reversalPosition, 'the wheel keeps moving while it slows')
   assert.ok(state.velocity > 0, 'velocity is retained instead of reversing instantly')
 
-  for (let i = 0; i < 100; i++) advanceDigit(state, 1 / 60)
+  for (let i = 0; i < 10; i++) advanceDigit(state, 1 / 60)
+  assert.ok(state.velocity > 0, 'braking remains visible after 180 ms')
+  for (let i = 0; i < 150; i++) advanceDigit(state, 1 / 60)
   assert.equal(state.position, state.target)
   assert.equal(state.velocity, 0)
   assert.equal(state.target, 0)
+})
+
+test('a new target during braking can resume the original direction without a jump', () => {
+  const state = { position: 4, target: 0, velocity: 12 }
+  advanceDigit(state, 1 / 60)
+  assert.ok(state.brakeRemaining > 0)
+  const before = state.position
+  state.target = 15
+  advanceDigit(state, 1 / 60)
+  assert.equal(state.brakeRemaining, 0)
+  assert.ok(state.velocity > 0)
+  assert.ok(state.position > before && state.position - before < 1)
+})
+
+test('a transition outlasts the 1 Hz display cycle and settles just after it', () => {
+  for (const target of [1, 9, -5]) {
+    const state = { position: 0, target, velocity: 0 }
+    for (let i = 0; i < 60; i++) advanceDigit(state, 1 / 60)
+    assert.notEqual(state.position, target)
+    assert.notEqual(state.velocity, 0)
+    for (let i = 0; i < 10; i++) advanceDigit(state, 1 / 60)
+    assert.equal(state.position, target)
+    assert.equal(state.velocity, 0)
+  }
+})
+
+test('successive 1 Hz targets preserve motion rather than resetting the wheel', () => {
+  const state = { position: 0, target: 9, velocity: 0 }
+  for (let i = 0; i < 60; i++) advanceDigit(state, 1 / 60)
+  const velocity = state.velocity
+  const position = state.position
+  state.target = targetForDigit(position, 6, -1)
+  advanceDigit(state, 1 / 60)
+  assert.ok(state.position > position)
+  assert.ok(state.velocity > 0 && state.velocity < velocity)
+  assert.ok(state.brakeRemaining > .3)
 })

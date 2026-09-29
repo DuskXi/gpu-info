@@ -24,3 +24,28 @@ test('a server restart replaces old stream history', () => {
   assert.equal(client.current.value.stream_id, 'second')
   assert.deepEqual(client.history.value.map(item => item.sequence), [1])
 })
+
+test('fast hardware data rejects old frames, deduplicates history, and resets sessions', () => {
+  const client = new TelemetryClient()
+  client.ingestHardware({ session_id: 'a', sequence: 3, checked_at: 30 })
+  client.ingestHardware({ session_id: 'a', sequence: 2, checked_at: 29 })
+  client.ingestHardware({ session_id: 'a', sequence: 3, checked_at: 31, bandwidth_sampling: { enabled: true } })
+  assert.equal(client.hardwareHistory.value.length, 1)
+  assert.equal(client.hardware.value.bandwidth_sampling.enabled, true)
+  client.ingestHardware({ session_id: 'b', sequence: 1, checked_at: 32 })
+  assert.equal(client.hardwareHistory.value.length, 1)
+  assert.equal(client.hardware.value.session_id, 'b')
+})
+
+test('numerical display is paced at 1 Hz while history and stop state stay current', () => {
+  const client = new TelemetryClient()
+  client.ingestHardware({ session_id: 'a', enabled: true, state: 'running', sequence: 1, checked_at: 30 })
+  const firstAt = client.hardwareDisplayAt
+  client.ingestHardware({ session_id: 'a', enabled: true, state: 'running', sequence: 2, checked_at: 30.25 })
+  assert.equal(client.hardwareDisplay.value.sequence, 1)
+  assert.equal(client.hardwareHistory.value.length, 2)
+  client.publishHardwareDisplay(firstAt + 1000)
+  assert.equal(client.hardwareDisplay.value.sequence, 2)
+  client.ingestHardware({ session_id: 'a', enabled: false, state: 'off', sequence: 2, checked_at: 30.5 })
+  assert.equal(client.hardwareDisplay.value.enabled, false)
+})
