@@ -53,8 +53,18 @@ class RollingTests(unittest.TestCase):
         result = window.add(packet(99_999_657, 200_000_000), GROUPS["tensor"])
         self.assertEqual(result["timestamp_trimmed_ns"], 343)
         self.assertEqual(result["observed_seconds"], .2)
+        result = window.add(packet(199_989_894, 300_000_000), GROUPS["tensor"])
+        self.assertEqual(result["timestamp_trimmed_ns"], 10_449)
+        self.assertEqual(result["observed_seconds"], .3)
         with self.assertRaises(ValueError):
-            window.add(packet(199_000_000, 300_000_000), GROUPS["tensor"])
+            window.add(packet(299_899_999, 400_000_000), GROUPS["tensor"])
+        with self.assertRaises(ValueError):
+            window.add(packet(299_000_000, 400_000_000), GROUPS["tensor"])
+        # The absolute ceiling must not admit large relative errors in short samples.
+        short = RollingSamples()
+        short.add(packet(0, 1000), GROUPS["tensor"])
+        with self.assertRaises(ValueError):
+            short.add(packet(900, 2000), GROUPS["tensor"])
 
     def test_profiler_mutex_is_shared_with_legacy_probe(self):
         from activity_probe import ProbeError

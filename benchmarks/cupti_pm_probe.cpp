@@ -1,8 +1,10 @@
 // Bounded research probe for CUDA 12.6+. No CUDA context or workload is created.
 // Default: enumerate PM metrics. --sample [metric ...]: sample GPU 0 for 6 seconds.
 // --check validates a single-pass set; --describe prints metadata; --sass only enumerates.
+// --catalog pm|range CHIP [metric ...]: offline metadata/configuration, no CUDA initialization.
 #include <cuda.h>
 #include <cupti_target.h>
+#include <cupti_version.h>
 #include <cupti_profiler_target.h>
 #include <cupti_profiler_host.h>
 #include <cupti_pmsampling.h>
@@ -47,8 +49,60 @@ struct Session {
     }
 };
 
+int catalog(int argc, char** argv) {
+    if (argc < 4) throw std::runtime_error("usage: --catalog pm|range CHIP [metric ...]");
+    const std::string kind = argv[2];
+    if (kind != "pm" && kind != "range") throw std::runtime_error("catalog kind must be pm or range");
+    uint32_t version = 0;
+    check(cuptiGetVersion(&version), "cuptiGetVersion");
+    std::cout << "offline_catalog cupti=" << version << " kind=" << kind << " chip=" << argv[3]
+              << " counter_availability=not_checked\n";
+    // A fresh host per requested metric avoids a failed configuration poisoning later checks.
+    for (int index = 4; index < argc || (index == 4 && argc == 4); ++index) {
+        Session session;
+        CUpti_Profiler_Host_Initialize_Params host{CUpti_Profiler_Host_Initialize_Params_STRUCT_SIZE};
+        host.profilerType = kind == "pm" ? CUPTI_PROFILER_TYPE_PM_SAMPLING : CUPTI_PROFILER_TYPE_RANGE_PROFILER;
+        host.pChipName = argv[3];
+        CALL(cuptiProfilerHostInitialize, host); session.host = host.pHostObject;
+        if (argc == 4) {
+            for (int type = 0; type < CUPTI_METRIC_TYPE__COUNT; ++type) {
+                CUpti_Profiler_Host_GetBaseMetrics_Params list{CUpti_Profiler_Host_GetBaseMetrics_Params_STRUCT_SIZE};
+                list.pHostObject = session.host; list.metricType = static_cast<CUpti_MetricType>(type);
+                CALL(cuptiProfilerHostGetBaseMetrics, list);
+                for (size_t i = 0; i < list.numMetrics; ++i) std::cout << list.ppMetricNames[i] << '\n';
+            }
+            return 0;
+        }
+        const char* metric = argv[index];
+        std::cout << "metric=" << metric << '\n';
+        try {
+            CUpti_Profiler_Host_GetMetricProperties_Params properties{CUpti_Profiler_Host_GetMetricProperties_Params_STRUCT_SIZE};
+            properties.pHostObject = session.host; properties.pMetricName = metric;
+            CALL(cuptiProfilerHostGetMetricProperties, properties);
+            std::cout << "description=" << properties.pDescription << " unit=" << properties.pDimUnit << '\n';
+            CUpti_Profiler_Host_ConfigAddMetrics_Params add{CUpti_Profiler_Host_ConfigAddMetrics_Params_STRUCT_SIZE};
+            add.pHostObject = session.host; add.ppMetricNames = &metric; add.numMetrics = 1;
+            CALL(cuptiProfilerHostConfigAddMetrics, add);
+            CUpti_Profiler_Host_GetConfigImageSize_Params size{CUpti_Profiler_Host_GetConfigImageSize_Params_STRUCT_SIZE};
+            size.pHostObject = session.host; CALL(cuptiProfilerHostGetConfigImageSize, size);
+            std::vector<uint8_t> config(size.configImageSize);
+            CUpti_Profiler_Host_GetConfigImage_Params image{CUpti_Profiler_Host_GetConfigImage_Params_STRUCT_SIZE};
+            image.pHostObject = session.host; image.pConfigImage = config.data(); image.configImageSize = config.size();
+            CALL(cuptiProfilerHostGetConfigImage, image);
+            CUpti_Profiler_Host_GetNumOfPasses_Params passes{CUpti_Profiler_Host_GetNumOfPasses_Params_STRUCT_SIZE};
+            passes.pConfigImage = config.data(); passes.configImageSize = config.size();
+            CALL(cuptiProfilerHostGetNumOfPasses, passes);
+            std::cout << "offline_passes=" << passes.numOfPasses << " (not a live sampling result)\n";
+        } catch (const std::exception& error) {
+            std::cout << "unavailable=" << error.what() << '\n';
+        }
+    }
+    return 0;
+}
+
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "--catalog") return catalog(argc, argv);
         if (cuInit(0) != CUDA_SUCCESS) throw std::runtime_error("cuInit failed");
         Session session;
         CUpti_Profiler_Initialize_Params init{CUpti_Profiler_Initialize_Params_STRUCT_SIZE};

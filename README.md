@@ -124,3 +124,5 @@ Windows 上需要 CUDA/CUPTI 12.6 和 MSVC x64 编译工具：
 helper 不创建 CUDA context，不执行 CUDA 工作负载，显式使用一个 8 MiB 硬件缓冲，持续解码并复用 counter image。启动、切换、停止和异常均管理 profiler 生命周期；与原有 Nsight 短采样共享互斥锁。第三方 profiler 争用、缓冲溢出、无样本和解码错误会显示错误并停止，不补零。程序关闭时停止 helper，父进程异常退出也会通过 stdin EOF 通知 helper 停止。详细页面仍保留折叠的 Nsight 扩展采样，读取计算派发、图形 warp、指令发射和显存读写指标。
 
 已验证的开销和 API 限制见 [训练 API 调查](benchmarks/nvidia-training-apis.md)。8 MiB 是指定缓冲大小，不是所有驱动资源的总显存保证。
+
+Tensor 按精度统计运算量、算子形状关联及时间线缓冲控制的进一步验证见 [计算量与实现效率调查](benchmarks/kernel-efficiency-investigation.md)。其中 Range 配置验证不是实时 TFLOPS 读数；新增离线探针不初始化 CUDA，也不进入训练进程。

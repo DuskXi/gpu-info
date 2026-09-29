@@ -73,10 +73,12 @@ class RollingSamples:
                 continue
             trimmed_ns = 0
             if start < self.last_end:
-                # CUPTI's cross-batch GPU clock conversion has sub-microsecond jitter
-                # on this driver. Clip only <=10 us; never hide a substantial overlap.
+                # Cross-batch clock conversion can overlap by ~10 us on this driver.
+                # Bound correction to 0.1% of an interval and at most 100 us.
+                # Large overlaps still indicate invalid data rather than clock jitter.
                 trimmed_ns = self.last_end - start
-                if trimmed_ns > 10_000:
+                tolerance_ns = min(100_000, (end - start) // 1000)
+                if trimmed_ns > tolerance_ns:
                     raise ValueError(f"CUPTI 采样区间重叠 {trimmed_ns} ns")
                 start = self.last_end
             row = {**row, "start_ns": start, "timestamp_trimmed_ns": trimmed_ns}

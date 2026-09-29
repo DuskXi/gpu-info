@@ -1,5 +1,7 @@
 # NVIDIA 训练观测 API 探索（2026-09-29）
 
+进一步的 Tensor 运算量目录验证、算子效率关联及 Activity 显存控制见 [计算量与实现效率调查](kernel-efficiency-investigation.md)。
+
 本机：Windows / RTX 4090 AD102 / 驱动 616.92 / CUDA、CUPTI 12.6。训练进程独立运行；实验没有注入、重启训练或修改功率、频率。已将可复现探针扩展为连续 CUPTI helper，接入首页、趋势页和统一数据流；原有 Nsight CLI 保留为折叠的扩展短采样。
 
 ## 已接入系统的连续观测
@@ -11,7 +13,7 @@
 - helper 按 PCI bus ID 对应 NVML 与 CUDA 设备，不假设两者编号一致。与 Nsight 共享 profiler 互斥，连续采样中请求旧探针已验证返回 HTTP 409。
 - 一个 8 MiB 硬件缓冲，每次解码复用 counter image，最多 128 样本；每组滑窗最多 128 条。停止、错误和父进程 stdin EOF 都释放采样器；十秒没有有效样本即终止。没有 CUDA context、工作负载或 kernel replay。
 - 当前驱动在组间仅 Stop/SetConfig/Start 会出现无新数据，改为 Stop/Disable 后重新 Enable。FMA/ALU/SFU 与 Tensor 活跃合组虽然配置报告 1 pass，实际解码报内存不足，改为分组；不能只依赖配置检查断言可用。
-- 实际 GPU 时间戳跨解码批次出现 93–343 ns 的边界重叠。只裁剪不超过 10 μs 的重叠并记录 `timestamp_trimmed_ns`；更大的重叠仍报错。未完成样本单独记录，不补齐为零。
+- 实际 GPU 时间戳跨解码批次出现边界重叠，早期为 93–343 ns，长期运行还遇到 10106 ns。现在只裁剪不超过样本时长 0.1%、且不超过 100 μs 的重叠并记录 `timestamp_trimmed_ns`；更大的重叠仍报错。未完成样本单独记录，不补齐为零。
 
 ### 开销复测
 
