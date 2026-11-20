@@ -1,0 +1,26 @@
+# Podman Quadlet unit (rootful). Install: sudo cp deploy/gpu-info.container /etc/containers/systemd/
+# CDI GPU passthrough; host PID namespace keeps PIDs/process names identical to the host;
+# SYS_ADMIN is needed for GPU performance counters while RmProfilingAdminOnly=1.
+[Unit]
+Description=GPU Monitor (gpu-info)
+After=network-online.target nvidia-persistenced.service
+
+[Container]
+ContainerName=gpu-info
+Image=localhost/gpu-info:latest
+AddDevice=nvidia.com/gpu=all
+AddCapability=SYS_ADMIN
+PodmanArgs=--pid=host
+Network=host
+SecurityLabelDisable=true
+Environment=GPU_INFO_HOST=127.0.0.1
+Environment=GPU_INFO_NSYS_PATH=/opt/nsys/target-linux-x64/nsys
+Volume=/var/lib/gpu-info/data:/app/data:U
+Volume=/opt/nvidia/nsight-systems/2025.5.2:/opt/nsys:ro
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target default.target

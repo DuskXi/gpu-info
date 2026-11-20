@@ -10,7 +10,14 @@ import uuid
 from collections import deque
 from pathlib import Path
 
-from activity_probe import ProbeError
+from activity_probe import COUNTERS_DISABLED_MESSAGE, ProbeError, counters_disabled
+
+if os.name == "nt":
+    HELPER_NAME = "cupti_stream.exe"
+    DEFAULT_CUPTI_PATH = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\CUPTI\lib64"
+else:
+    HELPER_NAME = "cupti_stream"
+    DEFAULT_CUPTI_PATH = "/usr/local/cuda/lib64"
 
 
 def metric(key, name, unit="percent"):
@@ -193,6 +200,8 @@ class PMSampling:
         return state
 
     def start(self, gpu_id, pci_bus_id, mode="all", replace=False):
+        if counters_disabled():
+            raise ProbeError(COUNTERS_DISABLED_MESSAGE)
         plan = sampling_plan(mode)
         if not pci_bus_id:
             raise ProbeError("缺少 PCI 设备标识，无法安全对应 CUDA 与 NVML 设备")
@@ -206,10 +215,10 @@ class PMSampling:
                 self.stop()
                 if self._thread.is_alive():
                     raise ProbeError("旧采样器尚未停止")
-            executable = Path(os.getenv("GPU_INFO_PM_HELPER", Path(__file__).parent / "native/bin/cupti_stream.exe"))
-            cupti = Path(os.getenv("GPU_INFO_CUPTI_PATH", r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\extras\CUPTI\lib64"))
+            executable = Path(os.getenv("GPU_INFO_PM_HELPER", Path(__file__).parent / "native/bin" / HELPER_NAME))
+            cupti = Path(os.getenv("GPU_INFO_CUPTI_PATH", DEFAULT_CUPTI_PATH))
             if not executable.is_file():
-                raise ProbeError("缺少 CUPTI helper；请运行 native/build.ps1")
+                raise ProbeError("缺少 CUPTI helper；请运行 native/build.ps1（Windows）或 native/build.sh（Linux）")
             if not self._profiler_lock.acquire(blocking=False):
                 raise ProbeError("另一硬件探针正在采样，请稍后重试")
             command = [str(executable), str(pci_bus_id), *[
@@ -217,6 +226,7 @@ class PMSampling:
                 for name, definitions in plan["cohorts"].items()
             ]]
             env = {**os.environ, "PATH": str(cupti) + os.pathsep + os.environ.get("PATH", ""),
+                   "LD_LIBRARY_PATH": str(cupti) + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""),
                    "GPU_INFO_PM_INTERVAL_MS": str(plan["interval_ms"]),
                    "GPU_INFO_PM_PUBLISH_MS": str(plan["publish_ms"]),
                    "GPU_INFO_PM_BATCHES_PER_GROUP": str(plan["batches_per_group"])}

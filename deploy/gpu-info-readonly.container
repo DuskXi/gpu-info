@@ -1,0 +1,37 @@
+# Podman Quadlet unit for production hosts, image built with:
+#   podman build --target readonly -t gpu-info:readonly .
+# Read-only is baked into the image (build_profile.READONLY=True, non-GET routes removed,
+# app tree not writable, runs as nobody). GPU performance counters are not shipped.
+# LAN-accessible on :16001 with per-IP rate limit and JSONL access log.
+# Install: /etc/containers/systemd/gpu-info.container
+[Unit]
+Description=GPU Monitor (gpu-info, read-only NVML)
+After=network-online.target
+
+[Container]
+ContainerName=gpu-info
+Image=localhost/gpu-info:readonly
+# NVML only needs the control node, one node per GPU and libnvidia-ml. Mounted directly instead
+# of via CDI so a stale host CDI spec (e.g. after a driver upgrade) cannot break startup; the
+# .so.1 symlink is resolved at each start, so it follows driver upgrades. List every GPU node.
+AddDevice=/dev/nvidiactl
+AddDevice=/dev/nvidia0
+AddDevice=/dev/nvidia1
+Volume=/usr/lib64/libnvidia-ml.so.1:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1:ro
+PodmanArgs=--pid=host
+Network=host
+DropCapability=ALL
+NoNewPrivileges=true
+ReadOnly=true
+Environment=GPU_INFO_HOST=0.0.0.0
+Environment=GPU_INFO_PORT=16001
+Environment=GPU_INFO_RPM=240
+Environment=GPU_INFO_MAX_WS_PER_IP=8
+Volume=/var/lib/gpu-info/data:/app/data:U
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

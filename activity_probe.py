@@ -17,6 +17,8 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+import build_profile
+
 
 _METRICS = {
     "sm_active": "SMs Active [Throughput %]",
@@ -42,6 +44,16 @@ _PIPELINE_METRICS = {
 _PIPELINE_CONFIG = Path(__file__).parent / "gpu_metrics" / "ad10x-pipes.config"
 _GENERAL_FREQUENCY_HZ = 100
 _PIPELINE_FREQUENCY_HZ = 10
+
+
+def counters_disabled() -> bool:
+    """GPU performance counters (CUPTI / Nsight) perturb running workloads; GPU_INFO_COUNTERS=off forbids them."""
+    if build_profile.READONLY:
+        return True
+    return os.getenv("GPU_INFO_COUNTERS", "on").strip().lower() in ("off", "0", "false", "no")
+
+
+COUNTERS_DISABLED_MESSAGE = "此部署已禁用 GPU 性能计数器采样（GPU_INFO_COUNTERS=off）"
 
 
 class ProbeError(RuntimeError):
@@ -128,6 +140,8 @@ class ActivityProbe:
         self._lock = threading.Lock()
 
     def capture(self, gpu_id: int, kind: str = "general", duration_seconds: int = 5) -> dict[str, Any]:
+        if counters_disabled():
+            raise ProbeError(COUNTERS_DISABLED_MESSAGE)
         if kind not in ("general", "pipelines"):
             raise ProbeError("未知硬件采样类型")
         if duration_seconds < 1 or duration_seconds > 5:
@@ -147,7 +161,7 @@ class ActivityProbe:
                 database = base.with_suffix(".sqlite")
                 command = [
                     str(nsys), "profile", "--trace=none", "--sample=none",
-                    "--cpuctxsw=none", f"--gpu-metrics-device={gpu_id}",
+                    "--cpuctxsw=none", f"--gpu-metrics-devices={gpu_id}",
                     f"--gpu-metrics-frequency={frequency_hz}",
                     f"--duration={duration_seconds}",
                     f"--output={base}",

@@ -17,6 +17,8 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocket
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
+import access_guard
+import build_profile
 from activity_probe import ActivityProbe, ProbeError
 from monitor import monitor
 from pm_sampling import PMSampling
@@ -239,7 +241,8 @@ async def lifespan(_: FastAPI):
         store.close()
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(lifespan=lifespan, **({"docs_url": None, "redoc_url": None, "openapi_url": None}
+                                   if build_profile.READONLY else {}))
 
 
 def latest_frame() -> TelemetryFrame:
@@ -434,8 +437,11 @@ dist = Path(__file__).parent / "frontend" / "dist"
 if dist.is_dir():
     app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
 
+# Must run after every route is registered: the read-only build strips non-GET handlers here.
+access_guard.install(app)
+
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host=os.getenv("GPU_INFO_HOST", "127.0.0.1"), port=8001)
+    uvicorn.run(app, host=os.getenv("GPU_INFO_HOST", "127.0.0.1"), port=int(os.getenv("GPU_INFO_PORT", "8001")))

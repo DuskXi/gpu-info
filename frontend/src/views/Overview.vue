@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useMonitorData } from '../composables/useMonitorData'
 import HardwarePanel from '../components/HardwarePanel.vue'
+import ProcessVramTable from '../components/ProcessVramTable.vue'
 import { bytes, number, percent, time } from '../format'
 import { memoryAccounts } from '../accounting'
 import { processPieGradient, processPieSliceAt, processVramComposition } from '../processVram'
@@ -9,7 +10,7 @@ import { processPieGradient, processPieSliceAt, processVramComposition } from '.
 const { snapshot, history, now, hardwareSampling, hardwareHistory } = useMonitorData()
 const system = computed(() => snapshot.value?.system)
 const gpus = computed(() => snapshot.value?.gpus ?? [])
-const gpuCapacity = computed(() => new Map(gpus.value.map(gpu => [gpu.id, gpu.memory?.total])))
+const multiGpu = computed(() => gpus.value.length > 1)
 const processes = computed(() => snapshot.value?.processes ?? [])
 const processCompositions = computed(() => new Map(
   gpus.value.map(gpu => [gpu.id, processVramComposition(snapshot.value, gpu.id)])
@@ -17,11 +18,6 @@ const processCompositions = computed(() => new Map(
 const accounting = computed(() => memoryAccounts(snapshot.value))
 const displayState = computed(() => snapshot.value?.display_state)
 const displayEvents = computed(() => [...(snapshot.value?.display_events ?? [])].reverse())
-const query = ref('')
-const gpuFilter = ref('all')
-const sort = ref('used_memory')
-const descending = ref(true)
-const showAll = ref(false)
 const tooltip = ref(null)
 
 function devicePercent(gpu) {
@@ -109,38 +105,6 @@ function openDeviceTooltip(event, gpu, kind) {
   })
 }
 
-const shownProcesses = computed(() => {
-  const q = query.value.trim().toLowerCase()
-  return processes.value
-    .filter(p => gpuFilter.value === 'all' || p.gpu_id === Number(gpuFilter.value))
-    .filter(p => !q || p.name?.toLowerCase().includes(q) || String(p.pid).includes(q))
-    .sort((a, b) => {
-      if (sort.value !== 'name') {
-        const av = Number.isFinite(a[sort.value]) ? a[sort.value] : null
-        const bv = Number.isFinite(b[sort.value]) ? b[sort.value] : null
-        if (av == null || bv == null) return av == null ? (bv == null ? 0 : 1) : -1
-      }
-      const av = a[sort.value] ?? ''
-      const bv = b[sort.value] ?? ''
-      const order = typeof av === 'string'
-        ? String(av).localeCompare(String(bv))
-        : av - bv
-      return descending.value ? -order : order
-    })
-})
-const visibleProcesses = computed(() =>
-  showAll.value || query.value ? shownProcesses.value : shownProcesses.value.slice(0, 20)
-)
-
-function sortBy(key) {
-  descending.value = sort.value === key ? !descending.value : key !== 'name'
-  sort.value = key
-}
-function counterOverCapacity(proc) {
-  const capacity = gpuCapacity.value.get(proc.gpu_id)
-  return Number.isFinite(proc.claimed_memory) && Number.isFinite(capacity)
-    && proc.claimed_memory > capacity
-}
 function displayLabel(display) {
   const resolution = display.width && display.height ? `${display.width} × ${display.height}` : '分辨率未知'
   const refresh = Number.isFinite(display.refresh_hz) ? ` · ${display.refresh_hz.toFixed(1)} Hz` : ''
@@ -184,15 +148,16 @@ function displayLabel(display) {
         </div>
       </section>
 
-      <div class="overview-columns">
+      <div class="overview-columns" :class="{ 'overview-multi': multiGpu }">
       <section class="section-block" aria-labelledby="gpu-heading">
         <div class="section-heading">
           <div><p class="eyebrow">01 / DEVICES</p><h2 id="gpu-heading">图形设备</h2></div>
           <router-link to="/detail" class="text-link">查看时间走势 <span aria-hidden="true">↗</span></router-link>
         </div>
         <div v-if="!gpus.length" class="empty-state">未检测到 NVIDIA GPU。请检查 NVML 和驱动状态。</div>
-        <div v-else class="gpu-grid">
-          <article v-for="gpu in gpus" :key="gpu.id" class="gpu-card">
+        <div v-else class="gpu-grid" :class="{ 'gpu-grid-multi': multiGpu }" :style="multiGpu ? { '--gpu-cols': Math.min(gpus.length, 3) } : null">
+          <div v-for="gpu in gpus" :key="gpu.id" class="gpu-column">
+          <article class="gpu-card">
             <div class="gpu-card-head">
               <span class="gpu-index">GPU <RollingValue :value="String(gpu.id).padStart(2, '0')" :amount="gpu.id" /></span>
               <span class="gpu-source">NVML</span>
@@ -282,6 +247,9 @@ function displayLabel(display) {
               </dl>
             </details>
           </article>
+          <ProcessVramTable v-if="multiGpu" :gpu-id="gpu.id" :processes="processes" :gpus="gpus"
+            :accounting="accounting" :sampled-at="snapshot?.processes_sampled_at" />
+          </div>
         </div>
         <div v-if="displayState" class="display-panel">
           <div class="display-panel-head"><span class="label">当前显示配置</span><small><RollingValue :value="displayState.count" /> 个活动显示器 · 每 5 秒检查变化</small></div>
@@ -305,64 +273,8 @@ function displayLabel(display) {
         </div>
       </section>
 
-      <section class="section-block process-section" aria-labelledby="process-heading">
-        <div class="section-heading">
-          <div><p class="eyebrow">02 / PROCESSES</p><h2 id="process-heading">进程显存</h2></div>
-          <span class="section-aside">进程采样 <RollingValue :value="time(snapshot?.processes_sampled_at)" :amount="snapshot?.processes_sampled_at" /> · GPU / PID 去重</span>
-        </div>
-        <details v-for="account in accounting" :key="account.gpuId" class="accounting-disclosure">
-          <summary>
-            <span>GPU <RollingValue :value="account.gpuId" /> · 显存口径核对</span>
-            <strong>设备已用 <RollingValue :value="bytes(account.nvmlUsed)" :amount="account.nvmlUsed" /> <span class="accounting-summary-source">NVML</span></strong>
-          </summary>
-          <div class="accounting-content">
-            <div class="accounting-values">
-              <div><span>NVML 设备已用</span><strong><RollingValue :value="bytes(account.nvmlUsed)" :amount="account.nvmlUsed" /></strong></div>
-              <div><span>Windows 设备专用使用</span><strong><RollingValue :value="bytes(account.adapterUsed)" :amount="account.adapterUsed" /></strong></div>
-              <div><span>Σ <RollingValue :value="account.localCount" /> 个进程本地用量 · 含重复</span><strong><RollingValue :value="bytes(account.processLocal)" :amount="account.processLocal" /></strong></div>
-              <div><span>Σ <RollingValue :value="account.processCount" /> 个进程专用计数 · 含重复</span><strong><RollingValue :value="bytes(account.processClaimed)" :amount="account.processClaimed" /></strong></div>
-            </div>
-            <p>设备已用以 NVML 读数为准。Σ 仅用于排查计数差异，不能当作设备占用或剩余显存。本地用量可包含共享窗口表面；Windows 专用计数还可能异常膨胀。DWM 的独占显存不能从这些计数直接拆出。</p>
-            <a href="https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/" target="_blank" rel="noopener noreferrer">微软的计数器说明 ↗</a>
-          </div>
-        </details>
-        <div class="table-toolbar">
-          <input v-model="query" type="search" placeholder="搜索进程名或 PID" aria-label="搜索进程" />
-          <select v-model="gpuFilter" aria-label="筛选 GPU">
-            <option value="all">全部 GPU</option>
-            <option v-for="gpu in gpus" :key="gpu.id" :value="String(gpu.id)">GPU {{ gpu.id }}</option>
-          </select>
-          <span><RollingValue :value="shownProcesses.length" /> 个进程</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr>
-              <th><button @click="sortBy('name')">进程 {{ sort === 'name' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th><button @click="sortBy('pid')">PID {{ sort === 'pid' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th><button @click="sortBy('gpu_id')">设备 {{ sort === 'gpu_id' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th class="numeric"><button @click="sortBy('used_memory')" title="Windows Local Usage；可包含跨进程共享资源">本地用量 {{ sort === 'used_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
-              <th class="numeric"><button @click="sortBy('claimed_memory')" title="Windows Dedicated Usage；可能包含共享资源，也可能异常膨胀">专用计数 {{ sort === 'claimed_memory' ? (descending ? '↓' : '↑') : '' }}</button></th>
-            </tr></thead>
-            <tbody>
-              <tr v-for="proc in visibleProcesses" :key="`${proc.gpu_id}:${proc.pid}`">
-                <td class="process-name">{{ proc.name }}</td>
-                <td class="mono"><RollingValue :value="proc.pid" /></td>
-                <td>GPU <RollingValue :value="proc.gpu_id" /></td>
-                <td class="numeric strong"><RollingValue :value="bytes(proc.used_memory)" :amount="proc.used_memory" /></td>
-                <td class="numeric" :class="{ 'counter-over-capacity': counterOverCapacity(proc) }">
-                  <RollingValue :value="bytes(proc.claimed_memory)" :amount="proc.claimed_memory" />
-                  <small v-if="counterOverCapacity(proc)">超物理容量</small>
-                </td>
-              </tr>
-              <tr v-if="!visibleProcesses.length"><td colspan="5" class="empty-cell">没有匹配的占用进程</td></tr>
-            </tbody>
-          </table>
-        </div>
-        <button v-if="!query && shownProcesses.length > 20" class="table-more" @click="showAll = !showAll">
-          <template v-if="showAll">收起进程列表</template><template v-else>显示全部 <RollingValue :value="shownProcesses.length" /> 个进程</template> <span aria-hidden="true">{{ showAll ? '↑' : '↓' }}</span>
-        </button>
-        <p class="data-note">进程本地用量与专用计数均可能包含跨进程共享资源，不能相加。专用计数不是进程独占 VRAM；核显未并入 NVIDIA 列表。</p>
-      </section>
+      <ProcessVramTable v-if="!multiGpu" :processes="processes" :gpus="gpus" :accounting="accounting"
+        :sampled-at="snapshot?.processes_sampled_at" />
       </div>
       <div v-if="tooltipDetail" class="vram-tooltip" role="tooltip" :style="{ left: `${tooltipDetail.left}px`, top: `${tooltipDetail.top}px` }">
         <div class="vram-tooltip-head"><i :style="{ background: tooltipDetail.color }"></i><strong><RollingValue :value="tooltipDetail.name" /></strong></div>

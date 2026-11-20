@@ -412,3 +412,22 @@ tbody tr:hover { background: var(--panel-hover); }
 @media (max-width: 460px) {
   .vram-visuals { gap: 12px; }
 }
+
+/* Multi-GPU: one column per device; each column holds the device card and that device's
+   process VRAM table directly below it. Collapses to a single column on narrow screens. */
+.gpu-column { min-width: 0; container-type: inline-size; }
+.gpu-grid-multi { grid-template-columns: repeat(var(--gpu-cols, 2), minmax(0, 1fr)); align-items: start; gap: clamp(16px, 1.6vw, 32px); }
+.process-section-scoped { margin-top: 32px; }
+.process-section-scoped .section-heading h2 { font-size: clamp(22px, 2vw, 30px); }
+@media (min-width: 1800px) {
+  .overview-columns.overview-multi { display: block; }
+  .overview-columns.overview-multi .gpu-grid { grid-template-columns: repeat(var(--gpu-cols, 2), minmax(0, 1fr)); }
+}
+@media (max-width: 1100px) {
+  .gpu-grid-multi { grid-template-columns: 1fr; }
+}
+@container (max-width: 680px) {
+  .gpu-column .vram-composition { grid-template-columns: 1fr; gap: 18px; }
+  .gpu-column .gpu-card { padding: 24px 22px 0; }
+}
+.process-section-scoped table { min-width: 480px; }
