@@ -1,31 +1,102 @@
 # GPU Monitor
 
-本地 NVIDIA GPU 监视器。后端通过 NVML 读取硬件数据，前端提供总览、进程显存饼图、进程显存表和最近 120 帧的单指标趋势。
+English | [简体中文](README.zh-CN.md)
 
-## 启动
+An NVIDIA GPU monitor. The backend reads hardware data through NVML; the web UI shows an overview, per-process VRAM pie charts, a process VRAM table and single-metric trends over the last 120 frames. Optionally, whole-device hardware performance counters can be read through CUPTI PM Sampling and Nsight Systems. With several GPUs the devices are shown side by side, each with its own process VRAM table below it.
 
-需要 Python 3.13、[uv](https://docs.astral.sh/uv/) 和 Node.js / pnpm。
+Runs on Windows and Linux, either directly or as a Podman container, and ships a read-only build for production hosts.
 
-```powershell
+## Platform support
+
+| Feature | Windows | Linux |
+| --- | --- | --- |
+| NVML device metrics, power, temperature, PCIe, training-health fields | ✅ | ✅ |
+| Process VRAM | ✅ WDDM performance counters (local usage / dedicated) | ✅ NVML process list |
+| Continuous CUPTI hardware sampling | ✅ `native/build.ps1` | ✅ `native/build.sh` or the container image |
+| On-demand Nsight Systems capture | ✅ | ✅ (requires `nsys`) |
+| Display configuration and display events | ✅ | — not implemented |
+| Dedicated / shared VRAM split | ✅ | — not implemented |
+
+Reading performance counters (CUPTI, Nsight GPU Metrics) needs privileges. On Linux the driver defaults to `RmProfilingAdminOnly=1`, so only root / `CAP_SYS_ADMIN` can read them; alternatively set the kernel module parameter `NVreg_RestrictProfilingToAdminUsers=0` (requires reloading the driver or a reboot). Without the privilege NVML monitoring keeps working and the hardware-sampling endpoints return an explicit error.
+
+## Getting started
+
+Requires Python 3.13, [uv](https://docs.astral.sh/uv/) and Node.js / pnpm.
+
+```bash
 uv sync
 uv run main.py
 ```
 
-后端默认监听 `http://127.0.0.1:8001`。如需从其他设备访问，可设置 `GPU_INFO_HOST=0.0.0.0`。
+The backend listens on `http://127.0.0.1:8001` by default. Set `GPU_INFO_HOST=0.0.0.0` to allow access from other machines and `GPU_INFO_PORT` to change the port.
 
-在另一个终端启动前端开发服务器：
+Start the frontend dev server in another terminal:
 
-```powershell
+```bash
 cd frontend
 pnpm install
 pnpm dev
 ```
 
-生产部署先执行 `pnpm build`，后端会自动服务 `frontend/dist`。前端采用 Hash 路由，因此从浏览器直接打开趋势分析也能正常加载。
+For production run `pnpm build`; the backend serves `frontend/dist` automatically. The frontend uses hash routing, so the trend page also loads when opened directly. The dev server proxies to `http://127.0.0.1:8001` by default; use `GPU_INFO_API=http://host:port pnpm dev` to point it at another backend (for example a remote read-only deployment).
 
-## 数据流
+## Container deployment (Podman)
 
-`GPUMonitor.capture()` 每次生成一个完整硬件采样。单线程采样器将其交给 `TelemetryStore`，后者加上时间戳和递增序号，保留最近 120 帧，并向历史接口与 WebSocket 发布同一格式的消息：
+The `Dockerfile` has two final targets; Python dependencies are installed with uv in both:
+
+| Target | Contents | Intended for |
+| --- | --- | --- |
+| `full` (default) | NVML + Linux CUPTI helper + CUPTI libraries; host Nsight Systems can be mounted | Development machines, your own training boxes |
+| `readonly` | NVML only; no CUPTI helper or build scripts, read-only mode baked in at build time | Production hosts |
+
+```bash
+podman build -t gpu-info .                               # full
+podman build --target readonly -t gpu-info:readonly .    # readonly
+```
+
+`deploy/` contains [Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html) units. Copy one to `/etc/containers/systemd/gpu-info.container`, then run `systemctl daemon-reload && systemctl start gpu-info` to have systemd manage it (start on boot, restart on failure, logs in journald):
+
+- `deploy/gpu-info.container`: the full image. GPU passthrough via CDI, `--pid=host` (PIDs and process names match the host), host networking, `SYS_ADMIN` for performance counters, and the host Nsight Systems mounted read-only. `run-container.sh` rebuilds the image, imports it into root's storage, updates the unit and restarts the service.
+- `deploy/gpu-info-readonly.container`: the readonly image. Instead of CDI it mounts `/dev/nvidiactl`, `/dev/nvidiaN` and the host `libnvidia-ml.so.1` read-only, so a stale host CDI spec after a driver upgrade cannot break startup. All capabilities dropped, `no-new-privileges`, read-only root filesystem. Add one `AddDevice=/dev/nvidiaN` line per GPU.
+
+Neither unit changes the driver, kernel or CDI configuration, and the monitor itself allocates no VRAM.
+
+## Read-only production build
+
+The `readonly` target is meant for hosts that run production inference or training services. There is no way to change state through the API:
+
+1. At build time `build_profile.py` is rewritten to `READONLY = True` and made read-only. It does not depend on an environment variable and cannot be switched back at runtime.
+2. At startup every non-GET/HEAD route handler is removed, and `/docs` and `/openapi.json` are disabled.
+3. An ASGI middleware answers every method other than GET/HEAD with 405, as a second line of defence behind the routing layer.
+4. The CUPTI helper, CUPTI libraries and build scripts are not shipped; performance-counter sampling (CUPTI, Nsight) is hard-disabled.
+5. `/app` is not writable and the process runs as `nobody`. The build verifies all of the above and fails if any check does not hold.
+
+Every deployment has access control:
+
+- A per-client-IP sliding-window rate limit (`GPU_INFO_RPM`, 240 requests/minute by default in the read-only build). Excess requests get 429 with `Retry-After`. WebSockets per IP are capped by `GPU_INFO_MAX_WS_PER_IP` (8 by default in the read-only build).
+- A JSONL access log: IP, method, path, query, status, duration, user agent and the denial reason (`readonly`, `rate_limited`, …). Written to stdout (journald) and additionally to a file when `GPU_INFO_ACCESS_LOG` is set.
+- The client IP is taken from the TCP peer only; the forgeable `X-Forwarded-For` header is ignored.
+
+In a read-only deployment the hardware-sampling and Nsight buttons in the UI receive 405; this is expected.
+
+## Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `GPU_INFO_HOST` | `127.0.0.1` (`0.0.0.0` in the container) | Listen address |
+| `GPU_INFO_PORT` | `8001` | Listen port |
+| `GPU_INFO_COUNTERS` | `on` | `off` disables CUPTI / Nsight sampling; always disabled in the read-only build |
+| `GPU_INFO_RPM` | full `0` (unlimited) / readonly `240` | Requests per minute per IP |
+| `GPU_INFO_MAX_WS_PER_IP` | full `0` (unlimited) / readonly `8` | Concurrent WebSockets per IP |
+| `GPU_INFO_ACCESS_LOG` | unset (`/app/data/access.log` in the readonly image) | Access log file path |
+| `GPU_INFO_PM_HELPER` | `native/bin/cupti_stream[.exe]` | CUPTI helper path |
+| `GPU_INFO_CUPTI_PATH` | Windows: CUDA 12.6 `extras/CUPTI/lib64`; Linux: `/usr/local/cuda/lib64` | CUPTI library directory |
+| `GPU_INFO_NSYS_PATH` | `nsys` looked up in `PATH` | Nsight Systems CLI path |
+| `GPU_INFO_API` | `http://127.0.0.1:8001` | Frontend dev server only: proxy target |
+
+## Data flow
+
+`GPUMonitor.capture()` produces one complete hardware sample per call. A single-threaded sampler hands it to `TelemetryStore`, which adds a timestamp and an increasing sequence number, keeps the last 120 frames, and publishes the same message format to the history endpoint and the WebSocket:
 
 ```json
 {
@@ -46,66 +117,67 @@ pnpm dev
 }
 ```
 
-前端 `TelemetryClient` 将历史接口和 WebSocket 消息统一送入 `ingest()`，按流标识和序号去重。服务端重启后切换到新流；断线保留旧帧但显示连接状态。采样缺失不会复制上一帧冒充新数据。状态 HTTP 接口在这份原始快照上增加请求时计算的 `health`，包括整帧、Windows 进程计数和显示配置的新鲜度；另附带最近一次按需硬件概况 `activity_probe` 和指令管线 `pipeline_probe`，其时间戳与实时帧分别标明。
+The frontend `TelemetryClient` feeds both history and WebSocket messages into `ingest()`, de-duplicating by stream id and sequence. After a server restart it switches to the new stream; on disconnect it keeps old frames but shows the connection state. A missing sample is never filled by repeating the previous frame. The status HTTP endpoints add a request-time `health` object to the raw snapshot, covering the freshness of the frame, the Windows process counters and the display configuration. They also include the latest on-demand hardware overview `activity_probe` and instruction-pipeline result `pipeline_probe`, each with its own timestamp separate from the live frame.
 
-| 接口 | 用途 |
+| Endpoint | Purpose |
 | --- | --- |
-| `GET /api/status` | 最新快照及 `health`；首次采样前返回 503 |
-| `GET /status.json` | 根路径的完整最新快照；与 `/api/status` 内容相同 |
-| `GET /status.md` | 根路径的人类可读状态摘要，`text/markdown` |
-| `GET /metrics` | 根路径的 Prometheus 文本指标；默认只输出系统和设备指标 |
-| `GET /metrics?include_processes=true` | 另外输出带 GPU、PID、进程名标签的逐进程指标 |
-| `GET /api/history?limit=120` | 最近 1–120 帧，按时间升序 |
-| `POST /api/activity-probe?gpu=0[&duration=2]` | 采集 1–5 秒设备级 GPU 硬件活动（默认 5 秒）；需要本机 Nsight Systems CLI 和性能计数器权限 |
-| `POST /api/activity-probe?gpu=0&kind=pipelines` | 采集 AD10x 的 Tensor、FMA Light/Heavy、ALU、SFU 管线吞吐 |
-| `GET /api/activity-probe[?kind=pipelines]` | 最近一次对应类型的采样结果；服务端重启后清空 |
-| `GET /api/sampling-control` | JSON 格式的统一采样控制请求文档，无参数不改变状态 |
-| `GET /api/sampling-control?action=state` | 所有持续采样开关、实际状态及错误 |
-| `POST /api/sampling-control?action=start&target=all&gpu=0&mode=compute&replace=true` | 开启基础监控、同窗硬件计数器和 PCIe 快速采样；支持分别控制 hardware/bandwidth/telemetry |
-| `POST /api/sampling-control?action=stop&target=all` | 关闭全部持续采样；有限时长的 Nsight capture 自动结束 |
-| `POST /api/hardware-sampling?enabled=true&gpu=0&mode=compute` | 兼容硬件开关；mode 可为 compute/diagnostic/all/activity/cache/pipelines/tensor/scalar/memory |
-| `POST /api/hardware-sampling?enabled=false` | 停止共享的连续采样，释放性能计数器 |
-| `GET /api/hardware-sampling` | 直接读取快速硬件缓存，附带 PCIe 快速采样状态 |
-| `GET /api/hardware-sampling/samples?after=0&limit=100` | 原始 CUPTI 样本环形缓存，支持 sequence/session_id 增量游标 |
-| `GET /api/bandwidth-sampling` | 10 Hz NVML PCIe 采样状态及最新值 |
-| `GET /api/bandwidth-sampling/samples?after=0&limit=100` | PCIe 增量样本；独立会话与游标 |
-| `GET /api/display-events?limit=50` | 最近 1–200 条显示配置事件 |
-| `WS /api/ws` | 实时快照；慢客户端只保留最新一帧 |
+| `GET /api/status` | Latest snapshot plus `health`; 503 before the first sample |
+| `GET /status.json` | Full latest snapshot at the root path; same content as `/api/status` |
+| `GET /status.md` | Human-readable status summary at the root path, `text/markdown` |
+| `GET /metrics` | Prometheus text metrics at the root path; system and device metrics only by default |
+| `GET /metrics?include_processes=true` | Additionally emits per-process metrics labelled with GPU, PID and process name |
+| `GET /api/history?limit=120` | The last 1–120 frames in ascending time order |
+| `POST /api/activity-probe?gpu=0[&duration=2]` | Captures 1–5 s of device-level GPU hardware activity (5 s by default); requires the Nsight Systems CLI and counter privileges |
+| `POST /api/activity-probe?gpu=0&kind=pipelines` | Captures AD10x Tensor, FMA Light/Heavy, ALU and SFU pipeline throughput |
+| `GET /api/activity-probe[?kind=pipelines]` | The latest result of that kind; cleared on server restart |
+| `GET /api/sampling-control` | JSON request document for the unified sampling control; no parameters means no state change |
+| `GET /api/sampling-control?action=state` | All continuous-sampling switches, their actual state and errors |
+| `POST /api/sampling-control?action=start&target=all&gpu=0&mode=compute&replace=true` | Starts base telemetry, same-window hardware counters and fast PCIe sampling; hardware/bandwidth/telemetry can be controlled separately |
+| `POST /api/sampling-control?action=stop&target=all` | Stops all continuous sampling; a bounded Nsight capture ends on its own |
+| `POST /api/hardware-sampling?enabled=true&gpu=0&mode=compute` | Legacy hardware switch; mode is one of compute/diagnostic/all/activity/cache/pipelines/tensor/scalar/memory |
+| `POST /api/hardware-sampling?enabled=false` | Stops the shared continuous session and releases the counters |
+| `GET /api/hardware-sampling` | Reads the fast hardware cache directly, with fast PCIe sampling state |
+| `GET /api/hardware-sampling/samples?after=0&limit=100` | Ring buffer of raw CUPTI samples with a sequence/session_id incremental cursor |
+| `GET /api/bandwidth-sampling` | 10 Hz NVML PCIe sampling state and latest values |
+| `GET /api/bandwidth-sampling/samples?after=0&limit=100` | Incremental PCIe samples with their own session and cursor |
+| `GET /api/display-events?limit=50` | The last 1–200 display configuration events |
+| `WS /api/ws` | Live snapshots; slow clients only keep the newest frame |
 
-三个根路径端点只格式化 `TelemetryStore` 已有的最新帧，不会因请求而额外采样；前端开发服务器也会将这些路径代理到后端。首次采样前均返回 503。整帧超过 5 秒未更新时，状态接口明确标记过期，`/metrics` 将 `gpu_info_up` 置 0 并停止输出旧的硬件读数；Windows 进程计数超过 30 秒时停止输出旧的逐进程读数。Prometheus 可通过时间戳指标计算样本年龄。指标使用 `gpu_info_` 前缀、字节／赫兹等基础单位和 0–1 比率；缺失计数器不输出样本。逐进程序列会随 PID 更替而增长，只有确实需要长期抓取时才启用。进程本地用量、专用计数和 NVML 整卡显存口径不同，不能把进程序列求和当作真实整卡占用。
+The POST endpoints do not exist in the read-only build.
 
+The three root-path endpoints only format the latest frame already held by `TelemetryStore`; a request never triggers extra sampling. The frontend dev server proxies these paths to the backend as well. All return 503 before the first sample. When a frame is more than 5 s old, the status endpoints mark it stale and `/metrics` sets `gpu_info_up` to 0 and stops emitting old hardware readings; once the Windows process counters are older than 30 s, old per-process readings are dropped. Prometheus can compute sample age from the timestamp metrics. Metrics use the `gpu_info_` prefix, base units such as bytes and hertz, and 0–1 ratios; missing counters emit no sample. Per-process series grow as PIDs change, so only enable them when you really need long-term scraping. Process local usage, dedicated counters and NVML device memory measure different things; summing the process series is not the real device usage.
 
-## 统计口径
+## Accounting
 
-- GPU 显存总占用来自 NVML，包含驱动和未归属到进程的分配。
-- 首页饼图按 GPU 上各进程的 `Local Usage` 本地显存读数切片，缺少 Windows 读数时使用可用的 NVML 进程读数；只展示最大的五个进程，其余合并。最大进程占读数总和至少 70% 时，旁边增加排除该进程后的局部放大饼图，颜色与全体图保持一致。读数包含共享资源时会重复计入，因此饼图表示进程读数的相对分布，不代表互斥的物理显存占比；旁边保留 NVML 整卡已用量核对。
-- Windows 每 5 秒通过 QueryDisplayConfig 检查活动显示路径，记录显示器名称、桌面/信号分辨率、刷新率及 HDR 状态。首次读取记为启动基线，之后只在配置改变时追加事件到 `data/display-events.jsonl`；事件同时保存当时 NVML 显存读数和 DWM 进程计数以便对照。旧版 Windows 若只能报告“高级色彩”，HDR 状态显示为未知。
-- Windows WDDM 下，NVML 的进程显存通常不可用。程序用无上下文的 CUDA Driver 设备 LUID 查询，将 Windows GPU 进程计数器精确关联到 NVML 所列 NVIDIA 设备；未匹配的核显计数器不计入。其他系统使用 NVML 的计算和图形进程列表，同一 GPU / PID 重复出现时取较大值。
-- Windows 进程表以 `GPU Process Memory\Local Usage` 显示“本地显存”，同时保留 `Dedicated Usage` 为“专用记账”，`Total Committed` 为“总提交”。本地显存更接近当前位于 GPU 本地内存的用量；它仍可能包含跨进程共享的窗口表面，不等于进程独占量，也不能相加推算设备总占用。专用记账在部分系统上会明显高于实际驻留，甚至高于物理显存容量。
-- `windows_adapter_memory` 是与进程值同轮读取的 Windows 设备级专用/共享使用量，用于在总览页核对计数口径；NVML 的设备占用仍是独立数据源。当前采样无法把 DWM 的进程值拆成自身私有分配、其他程序共享的表面和驱动内部资源。
-- GPU 设备指标约每秒采样，Windows 进程计数器在独立工作线程中异步刷新，查询间隔至少两秒；`processes_sampled_at` 标明最近一次进程采样时间。
-- 趋势页的进程选择器可以按进程名或 PID 搜索，并按本地显存、CPU、磁盘 I/O、GPU 占用排序。进程 CPU 是进程 CPU 时间增量除以逻辑处理器数后的整机百分比；磁盘 I/O 是进程实际读取与写入字节数的每秒速率，首次采样显示缺失值。
-- Windows 进程 GPU 占用取对应 NVIDIA 设备最忙引擎的性能计数器值；不可用时采用 NVML 的进程 SM 负载。缺失值显示为 `—`，不会当作 0 排序。
-- 每个进程同时保留 Windows `GPU Engine` 的 `engtype` 分类到 `engine_utilization`；同类多个实例取最忙值，并在最近 120 帧、`/status.json`、趋势页和带进程标签的 `/metrics` 中提供。这里的 3D、Compute、Copy 是 WDDM 队列分类，不等于 CUDA、RT Core 或 Tensor Core 的硬件使用率。本机训练中的 Python 进程约 87% SM 负载时，WDDM 将其约 89% 的活动记在名为 `3d` 的队列；因此 `compute` 缺失不代表 CUDA 空闲。
-- `gpus[].power.usage` 是 NVML 读取的整卡功率。功率并未拆分到进程或核心单元；各类引擎可能同时使用同一硬件，不能按百分比分摊瓦数。后续若建立模型，必须用独立负载校准，并把估算值、误差及无法归因部分与实测整卡功率分开显示。
-- 趋势页“进程指标”可切换为当前选中指标排名前 3/5/8 的进程曲线，并按 GPU 过滤；排名只使用最新有效值，缺失值不当成 0。不同进程使用不同颜色和带 PID 的图例。整卡硬件计数器不参与进程排名，因为它们没有进程归属。
-- 不把 Windows 共享 GPU 内存或核显显存并入 NVIDIA 专用显存。进程合计不一定等于设备总占用。
-- 监视器不调用 CUDA Runtime 的 `cudaSetDevice` / `cudaMemGetInfo`。Windows 的 CUDA Driver 查询只读取设备标识，不创建 CUDA 上下文。
-- 不可用的可选计数器返回 `null`，趋势图将其显示为缺口。
+- Total GPU memory usage comes from NVML and includes the driver and allocations not attributed to any process.
+- The overview pie chart slices each GPU by the processes' `Local Usage` readings, falling back to NVML process readings where Windows has none. Only the five largest processes are shown; the rest are merged. When the largest process accounts for at least 70% of the total, a zoomed pie excluding it is shown next to it, using the same colours. Shared resources are counted more than once, so the pie shows the relative distribution of process readings, not mutually exclusive physical VRAM; the NVML device total is shown alongside for comparison.
+- On Windows, active display paths are checked every 5 s via QueryDisplayConfig, recording monitor name, desktop/signal resolution, refresh rate and HDR state. The first read is recorded as a startup baseline; afterwards an event is appended to `data/display-events.jsonl` only when the configuration changes. Each event also stores the NVML memory reading and DWM process counters at that moment for comparison. If an older Windows version can only report "advanced color", HDR state is shown as unknown.
+- Under Windows WDDM, NVML per-process memory is usually unavailable. The program uses a context-free CUDA Driver device LUID query to map Windows GPU process counters exactly onto the NVIDIA devices listed by NVML; unmatched integrated-GPU counters are excluded. Other systems use NVML's compute and graphics process lists, taking the larger value when the same GPU / PID appears twice.
+- On Windows the process table shows `GPU Process Memory\Local Usage` as "local usage", and keeps `Dedicated Usage` as "dedicated" and `Total Committed` as "total committed". Local usage is closer to what currently resides in GPU-local memory; it can still include window surfaces shared across processes, is not exclusive to the process, and cannot be summed to infer device usage. On some systems the dedicated counter is far higher than actual residency, even above the physical VRAM size.
+- `windows_adapter_memory` is the Windows device-level dedicated/shared usage read in the same round as the process values, used on the overview page to cross-check the counters; NVML device usage remains an independent source. The current sampling cannot split DWM's process value into its private allocations, surfaces shared with other programs, and driver-internal resources.
+- GPU device metrics are sampled about once per second. Windows process counters are refreshed asynchronously on a separate worker thread at least two seconds apart; `processes_sampled_at` marks the latest process sample.
+- The process picker on the trend page can search by process name or PID and sort by local VRAM, CPU, disk I/O or GPU usage. Process CPU is the delta of process CPU time divided by the number of logical processors, as a whole-machine percentage; disk I/O is the per-second rate of bytes actually read and written, missing on the first sample.
+- Windows process GPU usage is the performance-counter value of the busiest engine on the matching NVIDIA device; when unavailable, NVML per-process SM utilization is used. Missing values are shown as `—` and are not sorted as 0.
+- Each process also keeps the Windows `GPU Engine` `engtype` breakdown in `engine_utilization`; for several instances of one type the busiest wins. It is available in the last 120 frames, `/status.json`, the trend page and process-labelled `/metrics`. 3D, Compute and Copy are WDDM queue categories, not CUDA, RT Core or Tensor Core hardware utilization. On the author's machine a training Python process at about 87% SM load had about 89% of its activity attributed to the queue named `3d`, so a missing `compute` value does not mean CUDA is idle.
+- `gpus[].power.usage` is the whole-device power read by NVML. Power is not split by process or functional unit; several engines may use the same hardware at once, so watts cannot be apportioned by percentage. Any future model must be calibrated against independent workloads and show its estimate, error and unattributable part separately from the measured device power.
+- The "process metrics" view on the trend page can switch to curves of the top 3/5/8 processes by the selected metric and filter by GPU. Ranking only uses the latest valid value; missing values are not treated as 0. Each process has its own colour and a legend entry with its PID. Whole-device hardware counters are not ranked because they have no process attribution.
+- Windows shared GPU memory and integrated-GPU memory are never added to NVIDIA dedicated memory. The process total does not necessarily equal device usage.
+- The monitor does not call CUDA Runtime `cudaSetDevice` / `cudaMemGetInfo`. The Windows CUDA Driver query only reads device identifiers and creates no CUDA context.
+- Unavailable optional counters are returned as `null` and shown as gaps in the trend charts.
 
-可用 PowerShell 直接核对 Windows 的原始计数器：
+The raw Windows counters can be checked directly in PowerShell:
 
 ```powershell
 Get-Counter '\GPU Process Memory(*)\Local Usage', '\GPU Process Memory(*)\Dedicated Usage'
 Get-Counter '\GPU Local Adapter Memory(*)\Local Usage'
 ```
 
-微软 [DirectX 说明](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/)解释了 DWM / csrss 的跨进程共享资源重复记账；微软也记录过 [GPU Process Memory 计数器异常偏高](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value) 的问题。若需要分配对象和迁移过程，使用 GPUView 或 Nsight Systems 的 WDDM trace，而不是仅凭实时计数器判断泄漏。
+Microsoft's [DirectX post](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/) explains how DWM / csrss shared resources are counted more than once, and Microsoft has also documented [GPU Process Memory counters reporting abnormally high values](https://learn.microsoft.com/en-us/troubleshoot/windows-client/performance/gpu-process-memory-counters-report-wrong-value). To see individual allocations and migrations, use GPUView or a Nsight Systems WDDM trace rather than judging leaks from live counters alone.
 
-## 检查
+## Checks
 
-```powershell
-python -m unittest discover -s tests
+```bash
+uv run --with pytest --with httpx python -m pytest tests
 mypy .
 flake8 .
 cd frontend
@@ -113,28 +185,38 @@ pnpm test
 pnpm build
 ```
 
-## 连续训练硬件采样
+## Continuous hardware sampling for training
 
-Windows 上需要 CUDA/CUPTI 12.6 和 MSVC x64 编译工具：
+On Windows you need CUDA/CUPTI 12.6 and the MSVC x64 build tools:
 
 ```powershell
 .\native\build.ps1
 ```
 
-默认 helper 位于 `native/bin/cupti_stream.exe`（生成文件不入 Git），CUPTI DLL 默认路径为 CUDA 12.6 的 `extras/CUPTI/lib64`。可以通过 `GPU_INFO_PM_HELPER` / `GPU_INFO_CUPTI_PATH` 指定位置。未构建、不支持或无权限时返回明确错误，NVML/进程监控继续运行。指标组为本机 AD102 实测组合，其他架构需要通过配置和解码验证，不能保证同名指标可用。
+On Linux you need the CUDA toolkit headers and CUPTI (distribution packages or a runfile install both work); the helper is built with g++. The `full` container image does this automatically in an `nvidia/cuda:12.6` devel stage:
 
-首页和趋势页共用服务器开关、设备和模式，浏览器刷新或换页不会重启采样。新增 `compute` 同窗模式：FMA/ALU/SFU、Tensor 指令和显存读写共 11 个计数器以 20 Hz 采集、约 250 ms 发布。`diagnostic` 将完整指标分成四个物理组，每组约 500 ms 快速轮换，20 Hz 仅指活动组内频率，不是所有指标同时达到 20 Hz。固定单组仍为 10 Hz、约每秒发布；`all` 每组约 3 秒慢轮换六组。均值使用本轮最近最多 3 秒**已观测区间**，切组重置窗口；曲线跨 epoch 断开。API 标注每组时间、窗口 ID、数据年龄与是否已过期。
+```bash
+./native/build.sh          # set CUDA_ROOT to point at another CUDA install
+```
 
-页面数值约每秒更新一次，快速缓存和趋势点仍保留约 250 ms 的发布频率；开关、错误状态立即响应。全局数字单次滚动约 1.15 秒，稍长于显示更新周期；新目标继承当前位置和速度，同向继续加减速，反向先用约 340 ms 渐进制动再掉头（计入 1.15 秒）。后台或不可见数字、减少动态效果偏好仍直接落到目标值，避免多余动画。
+The helper defaults to `native/bin/cupti_stream.exe` (Windows) or `native/bin/cupti_stream` (Linux); build output is not committed. Default CUPTI library paths are listed in the environment variable table above, and both can be overridden with `GPU_INFO_PM_HELPER` / `GPU_INFO_CUPTI_PATH`. If the helper is not built, unsupported or lacks privileges, an explicit error is returned and NVML/process monitoring keeps running. The metric groups are combinations measured on an AD102; other architectures need their configuration and decoding verified, and metrics with the same name are not guaranteed to exist.
 
-六个显示组：SM/Tensor 活跃、L1/L2/warp、FMA/ALU/SFU 占用与 warp 指令速率、Tensor warp 指令速率、FMA Lite 实际启用线程指令与有效线程数、显存读写带宽。`Ginst/s` 表示十亿条指令每秒；线程和 warp 口径分别标注。普通浮点管线的执行证据不能用于推断某个 PID、TFLOPS、同时忙碌的 CUDA 核心数或精确 FP32 利用率。有效线程数为同窗口线程指令数 / warp 指令数，范围 0–32；没有指令时不可用，不能把它称为核心占用率。
+The overview and trend pages share one server-side switch, device and mode, so refreshing or switching pages does not restart sampling. The `compute` same-window mode samples 11 counters (FMA/ALU/SFU, Tensor instructions and memory reads/writes) at 20 Hz and publishes about every 250 ms. `diagnostic` splits the full metric set into four physical groups rotated quickly at about 500 ms each; 20 Hz refers to the active group only, not all metrics at once. Fixed single groups run at 10 Hz and publish about once per second; `all` rotates slowly through six groups at about 3 s each. Averages use at most the last 3 s of **observed intervals** in the current round, and switching groups resets the window; curves break across epochs. The API labels each group with its time, window id, data age and whether it is stale.
 
-采样结果经 `TelemetryStore` 一并进入 WebSocket、history、status.json、status.md、metrics。硬件组各自保留 GPU 原始时间区间、接收时间、有效观测时长、样本数和未完成样本数。NVML 另外提供累计能量、能量差分功率、瞬时功率、温度裕量、限制时间比例、原始/未知时钟原因、驱动保留显存及 PCIe 链路状态。缺失字段为 null；能量计数回退时丢弃该次差分。
+Page values update about once per second, while the fast cache and trend points keep the ~250 ms publish rate; switches and error states respond immediately. A global digit roll takes about 1.15 s, slightly longer than the display update period. A new target inherits the current position and velocity, keeps accelerating or decelerating in the same direction, and when reversing first brakes progressively for about 340 ms before turning (included in the 1.15 s). Digits in the background or not visible, and the reduced-motion preference, jump straight to the target to avoid needless animation.
 
-helper 不创建 CUDA context，不执行 CUDA 工作负载，显式使用一个 8 MiB 硬件缓冲，持续解码并复用 counter image。启动、切换、停止和异常均管理 profiler 生命周期；与原有 Nsight 短采样共享互斥锁。第三方 profiler 争用、缓冲溢出、无样本和解码错误会显示错误并停止，不补零。程序关闭时停止 helper，父进程异常退出也会通过 stdin EOF 通知 helper 停止。详细页面仍保留折叠的 Nsight 扩展采样，读取计算派发、图形 warp、指令发射和显存读写指标。
+Six display groups: SM/Tensor active; L1/L2/warp; FMA/ALU/SFU occupancy and warp instruction rate; Tensor warp instruction rate; FMA Lite thread instructions actually enabled and effective thread count; memory read/write bandwidth. `Ginst/s` means billions of instructions per second; thread and warp bases are labelled separately. Execution evidence from the ordinary floating-point pipelines cannot be used to infer a particular PID, TFLOPS, the number of CUDA cores busy at once, or exact FP32 utilization. Effective thread count is thread instructions / warp instructions in the same window, range 0–32; it is unavailable when there are no instructions and must not be called core occupancy.
 
-已验证的开销和 API 限制见 [训练 API 调查](benchmarks/nvidia-training-apis.md)。8 MiB 是指定缓冲大小，不是所有驱动资源的总显存保证。
+Sampling results flow through `TelemetryStore` into the WebSocket, history, status.json, status.md and metrics. Each hardware group keeps its raw GPU time interval, receive time, effective observed duration, sample count and incomplete-sample count. NVML additionally provides cumulative energy, energy-delta power, instantaneous power, temperature margin, throttle time ratios, raw/unknown clock reasons, driver-reserved memory and PCIe link state. Missing fields are null; an energy counter that goes backwards discards that delta.
 
-Tensor 按精度统计运算量、算子形状关联及时间线缓冲控制的进一步验证见 [计算量与实现效率调查](benchmarks/kernel-efficiency-investigation.md)。其中 Range 配置验证不是实时 TFLOPS 读数；新增离线探针不初始化 CUDA，也不进入训练进程。
+The helper creates no CUDA context and runs no CUDA workload. It explicitly uses one 8 MiB hardware buffer and continuously decodes and reuses the counter image. Start, switch, stop and errors all manage the profiler lifecycle, and it shares a mutex with the short Nsight captures. Contention with a third-party profiler, buffer overflow, missing samples and decode errors are reported and stop sampling; nothing is zero-filled. The helper is stopped when the program exits, and if the parent dies unexpectedly the helper is told to stop through stdin EOF. The detail page still has the collapsible extended Nsight capture, reading compute dispatch, graphics warps, instruction issue and memory read/write metrics.
 
-同步/轮换的实测边界、PCIe/显存带宽口径和 Agent 接入示例见 [高频采样与控制 API](benchmarks/sampling-control.md)。显存 GB/s 是明确标注的估算，PCIe GB/s 来自 NVML 字节吞吐。所有新值进入根路径状态导出；Agent 需要低延迟时使用直接缓存和增量样本端点。
+Measured overhead and API limits are in [Training API investigation](benchmarks/nvidia-training-apis.md) (Chinese). 8 MiB is the requested buffer size, not a guarantee of total VRAM used by all driver resources.
+
+Further verification of per-precision Tensor operation counts, correlation with operator shapes and timeline buffer control is in [Compute and implementation efficiency investigation](benchmarks/kernel-efficiency-investigation.md) (Chinese). The range-profiling validation there is not a live TFLOPS reading; the new offline probes do not initialize CUDA or enter the training process.
+
+Measured limits of synchronized vs. rotating sampling, PCIe/memory bandwidth semantics and agent integration examples are in [High-frequency sampling and control API](benchmarks/sampling-control.md) (Chinese). Memory GB/s is an explicitly labelled estimate; PCIe GB/s comes from NVML byte throughput. All new values are included in the root-path status exports; agents that need low latency should use the direct cache and incremental sample endpoints.
+
+## License
+
+[MIT](LICENSE)
